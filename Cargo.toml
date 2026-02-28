@@ -1,0 +1,38 @@
+[package]
+name = "cnm_speed_rs"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.22"
+des = "0.8"
+cbc = "0.1"
+aes = "0.8"
+ecb = "0.1"
+clap = { version = "4.5.60", features = ["derive"] }
+ratatui = "0.30"
+crossterm = "0.29"
+rand = "0.10"
+urlencoding = "2.1"
+log = "0.4"
+simplelog = "0.12.2"
+tui-input = "0.15.0"
+
+[target.'cfg(windows)'.dependencies]
+# Avoid rustls/ring toolchain sensitivity on windows-gnu.
+ureq = { version = "3.2", default-features = false, features = ["json", "native-tls-no-default"] }
+
+[target.'cfg(not(windows))'.dependencies]
+# Cross builds: avoid OpenSSL dependency inside containers.
+ureq = { version = "3.2", default-features = false, features = ["json", "rustls", "rustls-webpki-roots"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+arboard = "3.6.1"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
