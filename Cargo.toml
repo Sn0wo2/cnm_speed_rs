@@ -1,5 +1,6 @@
 [package]
 name = "cnm_speed_rs"
+version = "0.0.0"
 edition = "2024"
 
 [dependencies]
@@ -10,29 +11,27 @@ des = "0.8"
 cbc = "0.1"
 aes = "0.8"
 ecb = "0.1"
-clap = { version = "4.5.60", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
-rand = "0.10"
+rand = "0.9"
 urlencoding = "2.1"
-log = "0.4"
-tui-input = "0.15.0"
+tui-input = "0.15"
 anyhow = "1.0"
-tracing = { version = "0.1.44", default-features = false, features = ["std"] }
-tracing-subscriber = { version = "0.3.22", default-features = false, features = ["env-filter", "fmt"] }
-tracing-appender = "0.2.4"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
-flate2 = "1.1.9"
-symlink = "0.1.0"
+flate2 = "1.1"
+symlink = "0.1"
 tokio = { version = "1.43", features = ["rt", "macros", "time", "sync", "net"] }
-reqwest = { version = "0.12", features = ["json", "native-tls", "stream"], default-features = false }
+reqwest = { version = "0.13.2", features = ["json", "native-tls", "stream"], default-features = false }
 async-trait = "0.1"
 futures = "0.3"
 bytes = "1.10"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-arboard = { version = "3.6.1", default-features = false }
-
+arboard = { version = "3.6", default-features = false }
 
 [profile.release]
 opt-level = "z"
