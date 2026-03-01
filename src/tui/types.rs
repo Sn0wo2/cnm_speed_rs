@@ -53,11 +53,15 @@ pub struct LiveStats {
     pub ping: f64,
     pub jitter: f64,
     pub dl_speed: f64,
+    pub dl_raw_speed: f64,
     pub dl_ratio: f32,
     pub ul_speed: f64,
+    pub ul_raw_speed: f64,
     pub ul_ratio: f32,
     pub dl_final: Option<f64>,
+    pub dl_raw_final: Option<f64>,
     pub ul_final: Option<f64>,
+    pub ul_raw_final: Option<f64>,
 }
 
 pub struct AppState {

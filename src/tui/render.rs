@@ -63,7 +63,7 @@ pub fn draw(f: &mut Frame, state: &std::sync::Arc<std::sync::Mutex<AppState>>) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(9), // Info
-            Constraint::Length(7), // Performance
+            Constraint::Length(8), // Performance (Increased to accommodate dual bars)
             Constraint::Length(3), // Actions
             Constraint::Min(0),    // Summary
         ])
@@ -134,11 +134,12 @@ fn render_info(f: &mut Frame, s: &AppState, t: Theme, area: Rect) {
 }
 
 fn render_performance(f: &mut Frame, s: &AppState, t: Theme, area: Rect) {
-    let (mode, speed, hist, ratio) = if s.running {
+    let (mode, speed, raw_speed, hist, ratio) = if s.running {
         if s.live_stats.dl_ratio > 0.0 && s.live_stats.dl_ratio < 1.0 {
             (
                 "Downloading",
                 s.live_stats.dl_speed,
+                s.live_stats.dl_raw_speed,
                 &s.dl_hist,
                 s.live_stats.dl_ratio,
             )
@@ -146,34 +147,54 @@ fn render_performance(f: &mut Frame, s: &AppState, t: Theme, area: Rect) {
             (
                 "Uploading",
                 s.live_stats.ul_speed,
+                s.live_stats.ul_raw_speed,
                 &s.ul_hist,
                 s.live_stats.ul_ratio,
             )
         }
     } else if s.results.is_some() {
         if let Some(ul) = s.live_stats.ul_final {
-            ("Uploading", ul, &s.ul_hist, 1.0)
+            (
+                "Uploading",
+                ul,
+                s.live_stats.ul_raw_final.unwrap_or(ul),
+                &s.ul_hist,
+                1.0,
+            )
         } else if let Some(dl) = s.live_stats.dl_final {
-            ("Downloading", dl, &s.dl_hist, 1.0)
+            (
+                "Downloading",
+                dl,
+                s.live_stats.dl_raw_final.unwrap_or(dl),
+                &s.dl_hist,
+                1.0,
+            )
         } else {
-            ("Finished", 0.0, &s.dl_hist, 1.0)
+            ("Finished", 0.0, 0.0, &s.dl_hist, 1.0)
         }
     } else {
-        ("Idle State", 0.0, &s.dl_hist, 0.0)
+        ("Idle State", 0.0, 0.0, &s.dl_hist, 0.0)
     };
 
     let block = apple_block(" PERFORMANCE ", t);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let is_cheating = s.settings.allow_official_cheat_calculation;
+
+    let mut constraints = vec![
+        Constraint::Length(1), // Title/Speed
+        Constraint::Length(1), // Meter 1
+        Constraint::Length(1), // Meter 2 (if cheating)
+        Constraint::Length(1), // Trend
+    ];
+    if !is_cheating {
+        constraints.remove(2);
+    }
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
+        .constraints(constraints)
         .split(inner);
 
     f.render_widget(
@@ -186,34 +207,74 @@ fn render_performance(f: &mut Frame, s: &AppState, t: Theme, area: Rect) {
             ),
             Span::styled(
                 format!(" {:.2} Mbps", speed),
-                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(if is_cheating { t.accent } else { t.success })
+                    .add_modifier(Modifier::BOLD),
             ),
+            if is_cheating {
+                Span::styled(
+                    format!(" (Truth: {:.2})", raw_speed),
+                    Style::default().fg(t.success),
+                )
+            } else {
+                Span::raw("")
+            },
         ])),
         rows[0],
     );
 
-    let chart_width = inner.width.saturating_sub(8) as usize;
+    let chart_width = inner.width.saturating_sub(10) as usize;
+
+    // Official / Normal Meter
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("Speed   ", Style::default().fg(t.dim)),
+            Span::styled(
+                if is_cheating { "Official" } else { "Speed   " },
+                Style::default().fg(t.dim),
+            ),
             Span::styled(
                 speed_meter(speed, chart_width),
-                Style::default().fg(t.accent),
+                Style::default().fg(if is_cheating { t.accent } else { t.success }),
             ),
         ])),
         rows[1],
     );
 
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Trend   ", Style::default().fg(t.dim)),
-            Span::styled(
-                mini_chart_rtl(hist, chart_width, ratio as f64),
-                Style::default().fg(t.accent),
-            ),
-        ])),
-        rows[2],
-    );
+    if is_cheating {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Truth   ", Style::default().fg(t.success)),
+                Span::styled(
+                    speed_meter(raw_speed, chart_width),
+                    Style::default().fg(t.success),
+                ),
+            ])),
+            rows[2],
+        );
+
+        let trend_idx = 3;
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Trend   ", Style::default().fg(t.dim)),
+                Span::styled(
+                    mini_chart_rtl(hist, chart_width, ratio as f64),
+                    Style::default().fg(t.accent),
+                ),
+            ])),
+            rows[trend_idx],
+        );
+    } else {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Trend   ", Style::default().fg(t.dim)),
+                Span::styled(
+                    mini_chart_rtl(hist, chart_width, ratio as f64),
+                    Style::default().fg(t.accent),
+                ),
+            ])),
+            rows[2],
+        );
+    }
 }
 
 fn render_actions(f: &mut Frame, s: &mut AppState, t: Theme, area: Rect) {
@@ -243,19 +304,39 @@ fn render_summary(f: &mut Frame, s: &AppState, t: Theme, area: Rect) {
     let mut used = 0;
 
     if let Some(r) = &s.results {
+        let is_cheating = s.settings.allow_official_cheat_calculation;
         lines.push(Line::from(vec![
             Span::styled(
                 " LAST RESULT ",
                 Style::default()
                     .fg(t.bg_card)
-                    .bg(t.success)
+                    .bg(if is_cheating { t.accent } else { t.success })
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" DL {:.1} / UL {:.1} Mbps", r.dl_avg, r.ul_avg),
+                if is_cheating {
+                    format!(" DL {:.1} / UL {:.1} Mbps (Official)", r.dl_avg, r.ul_avg)
+                } else {
+                    format!(" DL {:.1} / UL {:.1} Mbps", r.dl_avg, r.ul_avg)
+                },
                 Style::default().fg(t.highlight),
             ),
         ]));
+
+        if is_cheating {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "   TRUTH     ",
+                    Style::default().fg(t.success).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" DL {:.1} / UL {:.1} Mbps", r.dl_raw_avg, r.ul_raw_avg),
+                    Style::default().fg(t.success),
+                ),
+            ]));
+            used += 1;
+        }
+
         lines.push(Line::from(""));
         lines.push(line_kv(
             "Data Used",
@@ -384,7 +465,7 @@ fn draw_settings_modal(f: &mut Frame, s: &mut AppState, t: Theme) {
         let val_fg = if selected { t.highlight } else { t.text };
         let display_val = setting_display_value(s, field, selected, prio, allow_cheat);
         rows.push(Line::from(vec![
-            Span::styled(format!(" {:<16} ", label), label_style),
+            Span::styled(format!(" {:<20} ", label), label_style),
             Span::styled(
                 format!(" {} ", display_val),
                 Style::default().fg(val_fg).bg(val_bg),
@@ -396,7 +477,7 @@ fn draw_settings_modal(f: &mut Frame, s: &mut AppState, t: Theme) {
         let focus_idx = s.settings_focus as u16;
         if focus_idx < 5 {
             f.set_cursor_position((
-                inner.x + 19 + s.settings_input.visual_cursor() as u16,
+                inner.x + 23 + s.settings_input.visual_cursor() as u16,
                 inner.y + focus_idx,
             ));
         }

@@ -27,8 +27,10 @@ pub struct NodeInfo {
 #[allow(dead_code)]
 pub struct TestResult {
     pub dl_avg: f64,
+    pub dl_raw_avg: f64,
     pub dl_max: f64,
     pub ul_avg: f64,
+    pub ul_raw_avg: f64,
     pub ul_max: f64,
     pub ping_idle: f64,
     pub jitter_idle: f64,
@@ -39,7 +41,7 @@ pub struct TestResult {
     pub loaded_ping_samples: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TestPriority {
     DownloadFirst,
     UploadFirst,
@@ -86,10 +88,12 @@ pub enum ProgressEvent {
     DownloadUpdate {
         ratio: f32,
         speed: f64,
+        raw_speed: f64,
     },
     UploadUpdate {
         ratio: f32,
         speed: f64,
+        raw_speed: f64,
     },
     LatencyUpdate {
         ping: f64,

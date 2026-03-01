@@ -35,20 +35,32 @@ pub fn apply_event(state: &mut AppState, ev: ProgressEvent) {
                 state.node = state.nodes[state.selected_idx].name.clone();
             }
         }
-        ProgressEvent::DownloadUpdate { ratio, speed } => {
+        ProgressEvent::DownloadUpdate {
+            ratio,
+            speed,
+            raw_speed,
+        } => {
             state.live_stats.dl_ratio = ratio.clamp(0.0, 1.0);
             state.live_stats.dl_speed = speed.max(0.0);
+            state.live_stats.dl_raw_speed = raw_speed.max(0.0);
             push_history(&mut state.dl_hist, state.live_stats.dl_speed);
             if state.live_stats.dl_ratio >= 1.0 {
                 state.live_stats.dl_final = Some(state.live_stats.dl_speed);
+                state.live_stats.dl_raw_final = Some(state.live_stats.dl_raw_speed);
             }
         }
-        ProgressEvent::UploadUpdate { ratio, speed } => {
+        ProgressEvent::UploadUpdate {
+            ratio,
+            speed,
+            raw_speed,
+        } => {
             state.live_stats.ul_ratio = ratio.clamp(0.0, 1.0);
             state.live_stats.ul_speed = speed.max(0.0);
+            state.live_stats.ul_raw_speed = raw_speed.max(0.0);
             push_history(&mut state.ul_hist, state.live_stats.ul_speed);
             if state.live_stats.ul_ratio >= 1.0 {
                 state.live_stats.ul_final = Some(state.live_stats.ul_speed);
+                state.live_stats.ul_raw_final = Some(state.live_stats.ul_raw_speed);
             }
         }
         ProgressEvent::LatencyUpdate { ping, jitter } => {
@@ -67,7 +79,9 @@ pub fn apply_event(state: &mut AppState, ev: ProgressEvent) {
         }
         ProgressEvent::TestFinished(res) => {
             state.live_stats.dl_final = Some(res.dl_avg);
+            state.live_stats.dl_raw_final = Some(res.dl_raw_avg);
             state.live_stats.ul_final = Some(res.ul_avg);
+            state.live_stats.ul_raw_final = Some(res.ul_raw_avg);
             state.results = Some(res);
             state.running = false;
             state.status = "Done".into();

@@ -108,7 +108,7 @@ impl SpeedTester {
     pub fn new(base_url: String, node_port: u16, endpoints: SpeedtestEndpoints) -> Self {
         let client = Client::builder()
             .user_agent(USER_AGENT)
-            .pool_max_idle_per_host(0) // 极度抠门：不保留空闲连接
+            .pool_max_idle_per_host(0)
             .pool_idle_timeout(Duration::from_secs(1))
             .build()
             .unwrap_or_default();
@@ -370,16 +370,18 @@ impl SpeedTester {
 
         let _ = tx.send(ProgressEvent::TestFinished(TestResult {
             dl_avg: dl_res.0,
-            dl_max: dl_res.1,
+            dl_raw_avg: dl_res.1,
+            dl_max: dl_res.2,
             ul_avg: ul_res.0,
-            ul_max: ul_res.1,
+            ul_raw_avg: ul_res.1,
+            ul_max: ul_res.2,
             ping_idle: p_idle,
             jitter_idle: j_idle,
-            ping_loaded: (dl_res.2 + ul_res.2) / 2.0,
-            jitter_loaded: (dl_res.3 + ul_res.3) / 2.0,
-            dl_bytes: dl_res.4,
-            ul_bytes: ul_res.4,
-            loaded_ping_samples: dl_res.5 + ul_res.5,
+            ping_loaded: (dl_res.3 + ul_res.3) / 2.0,
+            jitter_loaded: (dl_res.4 + ul_res.4) / 2.0,
+            dl_bytes: dl_res.5,
+            ul_bytes: ul_res.5,
+            loaded_ping_samples: dl_res.6 + ul_res.6,
         })).await;
     }
 
@@ -651,7 +653,7 @@ impl SpeedTester {
         allow_official_cheat_calculation: bool,
         tx: mpsc::Sender<ProgressEvent>,
         stop: Arc<AtomicBool>,
-    ) -> (f64, f64, f64, f64, u64, usize) {
+    ) -> (f64, f64, f64, f64, f64, u64, usize) {
         let total_bytes = Arc::new(AtomicU64::new(0));
         let start_time = Instant::now();
         let end_time = start_time + Duration::from_secs(duration_sec);
@@ -667,7 +669,7 @@ impl SpeedTester {
 
         // Memory Optimization: Pre-allocate ONE shared upload buffer for all workers
         let up_data = if !is_dl {
-            let mut up_data_raw = vec![0u8; 1024 * 1024]; // 下调至 1MB
+            let mut up_data_raw = vec![0u8; 1024 * 1024];
             rand::rng().fill(&mut up_data_raw[..]);
             Some(bytes::Bytes::from(up_data_raw))
         } else {
@@ -681,7 +683,7 @@ impl SpeedTester {
             let origin = origin.clone();
             let referer = referer.clone();
             let client = client.clone();
-            let up_data_shared = up_data.clone(); // Cheap Arc-based clone
+            let up_data_shared = up_data.clone();
             let path = if is_dl {
                 self.endpoints.node_download_path
             } else {
@@ -716,7 +718,6 @@ impl SpeedTester {
                             }
                         }
                     } else {
-                        // Use the shared buffer
                         let body_data = up_data_shared.as_ref().cloned().unwrap_or_default();
                         if let Ok(resp) = client.post(&url)
                             .header("Accept", "*/*")
@@ -727,10 +728,9 @@ impl SpeedTester {
                             .send()
                             .await
                         {
-                        if resp.status() == 200 {
-                            tb.fetch_add(1024 * 1024, Ordering::Relaxed);
-                        }
-
+                            if resp.status() == 200 {
+                                tb.fetch_add(1024 * 1024, Ordering::Relaxed);
+                            }
                         }
                     }
                 }
@@ -814,11 +814,13 @@ impl SpeedTester {
                     ProgressEvent::DownloadUpdate {
                         ratio,
                         speed: display_mbps,
+                        raw_speed: raw_mbps,
                     }
                 } else {
                     ProgressEvent::UploadUpdate {
                         ratio,
                         speed: display_mbps,
+                        raw_speed: raw_mbps,
                     }
                 }).await;
                 last_bytes = current_bytes;
@@ -832,15 +834,24 @@ impl SpeedTester {
         }
 
         if samples.is_empty() {
-            return (0.0, 0.0, 0.0, 0.0, total_bytes.load(Ordering::Relaxed), 0);
+            return (0.0, 0.0, 0.0, 0.0, 0.0, total_bytes.load(Ordering::Relaxed), 0);
         }
         let speed_stats = SampleStats::from_samples(&samples, duration_sec, smoothing_window_sec);
         let ld = loaded_delays.lock().unwrap();
         let delay_stats = DelayStats::from_values(&ld);
         let total = total_bytes.load(Ordering::Relaxed);
         let loaded_n = ld.len();
+        
+        let avg_raw = if allow_official_cheat_calculation {
+            let multiplier = if is_dl { 1.14 } else { 1.09 };
+            speed_stats.avg_bps / 1_000_000.0 / multiplier
+        } else {
+            speed_stats.avg_bps / 1_000_000.0
+        };
+
         (
             speed_stats.avg_bps / 1_000_000.0,
+            avg_raw,
             speed_stats.max_bps / 1_000_000.0,
             delay_stats.avg_ms,
             delay_stats.jitter_ms,
