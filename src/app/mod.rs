@@ -37,12 +37,9 @@ impl AppRuntime {
     pub fn new(args: &Args) -> (Self, mpsc::Sender<ProgressEvent>) {
         let (tx, rx) = mpsc::channel::<ProgressEvent>(100);
         let logger = LoggerManager::init().expect("initializing loggers");
-        
+
         // Load settings from file or use default
-        let settings = match std::fs::read_to_string("data/settings.json") {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| RuntimeConfig::default()),
-            Err(_) => RuntimeConfig::default(),
-        };
+        let settings = Self::load_settings_from_file().unwrap_or_else(RuntimeConfig::default);
 
         let state = Arc::new(Mutex::new(tui::AppState::new(
             "(detecting...)".into(),
@@ -53,20 +50,48 @@ impl AppRuntime {
             s.status = "Detecting fastest server...".into();
             s.settings = settings;
             // Override with CLI args if provided
-            if args.duration != 10 { s.settings.duration_sec = args.duration; }
-            if args.concurrency != 8 { s.settings.concurrency = args.concurrency; }
+            if args.duration != 10 {
+                s.settings.duration_sec = args.duration;
+                s.settings_dirty = true;
+            }
+            if args.concurrency != 8 {
+                s.settings.concurrency = args.concurrency;
+                s.settings_dirty = true;
+            }
         }
 
-        (Self {
-            state,
-            source_runtime: SourceRuntime::new(tx.clone()),
-            rx,
-            _logger: logger,
-        }, tx)
+        (
+            Self {
+                state,
+                source_runtime: SourceRuntime::new(tx.clone()),
+                rx,
+                _logger: logger,
+            },
+            tx,
+        )
+    }
+
+    fn load_settings_from_file() -> Option<RuntimeConfig> {
+        std::fs::read_to_string("data/settings.json")
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+    }
+
+    pub fn reload_settings(&self) {
+        if let Some(settings) = Self::load_settings_from_file() {
+            let mut s = self.state.lock().unwrap();
+            s.settings = settings;
+            s.settings_dirty = false;
+            tui::settings_sync_input(&mut s);
+            tui::push_timeline(&mut s.timeline, "Settings reloaded from disk".into());
+        }
     }
 
     pub fn save_settings(&self) {
         let s = self.state.lock().unwrap();
+        if !s.settings_dirty {
+            return;
+        }
         let json = serde_json::to_string_pretty(&s.settings).unwrap_or_default();
         let _ = std::fs::create_dir_all("data");
         let _ = std::fs::write("data/settings.json", json);
@@ -171,7 +196,14 @@ impl AppRuntime {
             KeyCode::Char('s') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                 tui::copy_summary_to_clipboard(&mut s);
             }
-            KeyCode::Enter => tui::settings_apply_input(&mut s),
+            KeyCode::Enter => {
+                if s.settings_focus == tui::SettingsField::Reload {
+                    drop(s);
+                    self.reload_settings();
+                } else {
+                    tui::settings_apply_input(&mut s);
+                }
+            }
             _ => tui::settings_handle_key(&mut s, key),
         }
 

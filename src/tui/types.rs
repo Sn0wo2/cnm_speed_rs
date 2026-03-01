@@ -38,6 +38,7 @@ pub enum SettingsField {
     PingRefresh,
     Priority,
     AllowOfficialCheatCalculation,
+    Reload,
 }
 
 #[derive(Default)]
@@ -86,6 +87,7 @@ pub struct AppState {
 
     pub settings: RuntimeConfig,
     pub settings_open: bool,
+    pub settings_dirty: bool,
     pub settings_focus: SettingsField,
     pub settings_input: tui_input::Input,
 }
@@ -110,6 +112,7 @@ impl AppState {
             timeline: VecDeque::with_capacity(32),
             settings: RuntimeConfig::default(),
             settings_open: false,
+            settings_dirty: false,
             settings_focus: SettingsField::Concurrency,
             settings_input: tui_input::Input::default(),
         }

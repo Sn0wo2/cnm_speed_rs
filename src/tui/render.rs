@@ -448,6 +448,7 @@ fn draw_settings_modal(f: &mut Frame, s: &mut AppState, t: Theme) {
             "Official Cheat Calculation",
             SettingsField::AllowOfficialCheatCalculation,
         ),
+        ("Reload from Disk", SettingsField::Reload),
     ];
 
     for (label, field) in fields {
@@ -638,5 +639,6 @@ fn setting_display_value(
         }
         SettingsField::Priority => prio.to_string(),
         SettingsField::AllowOfficialCheatCalculation => allow_cheat.to_string(),
+        SettingsField::Reload => "Press Enter".into(),
     }
 }
