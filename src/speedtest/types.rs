@@ -24,6 +24,7 @@ pub struct NodeInfo {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TestResult {
     pub dl_avg: f64,
     pub dl_max: f64,
@@ -52,7 +53,7 @@ pub struct RuntimeConfig {
     pub speed_refresh_ms: u64,
     pub ping_refresh_ms: u64,
     pub priority: TestPriority,
-    pub allow_official_cheat_calc: bool,
+    pub allow_official_cheat_calculation: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -64,7 +65,7 @@ impl Default for RuntimeConfig {
             speed_refresh_ms: 250,
             ping_refresh_ms: 500,
             priority: TestPriority::DownloadFirst,
-            allow_official_cheat_calc: true,
+            allow_official_cheat_calculation: false,
         }
     }
 }
@@ -75,30 +76,30 @@ pub enum ProgressEvent {
         base_url: String,
         province_label: String,
     },
-    Info {
+    UserInfo {
         user: String,
         ip: String,
         city: String,
         bw: String,
     },
-    Nodes(Vec<NodeInfo>),
-    DownloadProgress {
+    NodesUpdate(Vec<NodeInfo>),
+    DownloadUpdate {
         ratio: f32,
         speed: f64,
     },
-    UploadProgress {
+    UploadUpdate {
         ratio: f32,
         speed: f64,
     },
-    PingUpdate {
+    LatencyUpdate {
         ping: f64,
         jitter: f64,
     },
-    NodeIpUpdate {
+    NodeIpFound {
         node_id: String,
         node_ip: String,
     },
-    Finished(TestResult),
+    TestFinished(TestResult),
 }
 
 pub struct ActiveTestHandle {

@@ -5,6 +5,7 @@ mod app;
 mod source;
 mod tui;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    app::run()
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
+    app::run().await
 }

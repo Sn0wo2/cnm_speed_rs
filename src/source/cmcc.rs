@@ -3,11 +3,12 @@ use crate::source::cmcc_types::{ApiResponse, PROVINCES};
 use crate::source::{SourceSelection, SpeedSource};
 use crate::speedtest::types::{ActiveTestHandle, ProgressEvent, RuntimeConfig};
 use crate::speedtest::{SpeedTester, SpeedtestEndpoints};
-use log::{info, warn};
+use anyhow::Result;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc;
+use tokio::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing::{info, warn};
 
 const DEFAULT_NODE_PORT: u16 = 18989;
 const DETECT_TIMEOUT_MS: u64 = 900;
@@ -110,32 +111,33 @@ impl CmccSource {
         })
     }
 
-    pub fn detect_auto(&self, tx: &mpsc::Sender<ProgressEvent>) -> SourceSelection {
+    pub async fn detect_auto(&self, tx: &mpsc::Sender<ProgressEvent>) -> SourceSelection {
+        let start_total = Instant::now();
         let deadline = Instant::now() + Duration::from_millis(DETECT_TIMEOUT_MS + 500);
-        let (rtx, rrx) = mpsc::channel::<ProbeResult>();
+        let (rtx, mut rrx) = mpsc::channel::<ProbeResult>(PROVINCES.len());
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(DETECT_TIMEOUT_MS))
+            .build()
+            .unwrap_or_default();
 
         for province in PROVINCES {
             let rtx = rtx.clone();
             let base = self.build_base_url_for_province(province.code);
             let label = province.name.to_string();
             let probe = self.join_base_url(&base, GET_USER_IP_PATH);
-            std::thread::spawn(move || {
+            let client = client.clone();
+            tokio::spawn(async move {
                 let start = Instant::now();
-                if let Ok(mut resp) = ureq::get(&probe)
-                    .config()
-                    .timeout_global(Some(Duration::from_millis(DETECT_TIMEOUT_MS)))
-                    .build()
-                    .call()
-                {
+                if let Ok(resp) = client.get(&probe).send().await {
                     if resp.status() == 200 {
                         let latency_ms = start.elapsed().as_millis();
-                        if let Ok(json) = resp.body_mut().read_json::<ApiResponse>() {
+                        if let Ok(json) = resp.json::<ApiResponse>().await {
                             let _ = rtx.send(ProbeResult {
                                 base_url: base,
                                 label,
                                 latency_ms,
                                 user_ip: json.data.as_str().unwrap_or("").to_string(),
-                            });
+                            }).await;
                         }
                     }
                 }
@@ -147,12 +149,12 @@ impl CmccSource {
         let mut received = 0usize;
         let _ = tx.send(ProgressEvent::Status(
             "Detecting server... (0 replies)".into(),
-        ));
+        )).await;
 
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            match rrx.recv_timeout(remaining.min(Duration::from_millis(250))) {
-                Ok(probe) => {
+            match tokio::time::timeout(remaining.min(Duration::from_millis(250)), rrx.recv()).await {
+                Ok(Some(probe)) => {
                     received += 1;
                     info!(
                         "Probe ok province={} latency={}ms url={} ip={}",
@@ -169,19 +171,20 @@ impl CmccSource {
                         let _ = tx.send(ProgressEvent::Status(format!(
                             "Detecting server... ({} replies, best: {} {}ms)",
                             received, best_probe.label, best_probe.latency_ms
-                        )));
+                        ))).await;
                         if best_probe.latency_ms <= DETECT_EARLY_EXIT_MS {
                             break;
                         }
                     }
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    let _ = tx.send(ProgressEvent::Status(format!(
-                        "Detecting server... ({} replies)",
-                        received
-                    )));
+                _ => {
+                    if received > 0 {
+                         let _ = tx.send(ProgressEvent::Status(format!(
+                            "Detecting server... ({} replies)",
+                            received
+                        ))).await;
+                    }
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
 
@@ -189,7 +192,8 @@ impl CmccSource {
             let _ = tx.send(ProgressEvent::Status(format!(
                 "Auto-selected {} ({}ms)",
                 best_probe.label, best_probe.latency_ms
-            )));
+            ))).await;
+            info!("Auto-detection completed in {:?}", start_total.elapsed());
             return SourceSelection {
                 base_url: best_probe.base_url,
                 label: best_probe.label,
@@ -197,7 +201,7 @@ impl CmccSource {
             };
         }
 
-        warn!("No province server reachable, fallback to zj");
+        warn!("No province server reachable after {:?}, fallback to zj", start_total.elapsed());
         SourceSelection {
             base_url: self.build_fallback_base_url(),
             label: "Zhejiang (fallback)".to_string(),
@@ -206,25 +210,22 @@ impl CmccSource {
     }
 }
 
+#[async_trait::async_trait]
 impl SpeedSource for CmccSource {
-    fn detect(
-        &self,
-        args: &Args,
-        tx: &mpsc::Sender<ProgressEvent>,
-    ) -> Result<SourceSelection, String> {
+    async fn detect(&self, args: &Args, tx: &mpsc::Sender<ProgressEvent>) -> Result<SourceSelection> {
         if let Some(selection) = self.detect_forced(args) {
             return Ok(selection);
         }
 
         let _ = tx.send(ProgressEvent::Status(
             "Detecting fastest province server...".into(),
-        ));
+        )).await;
 
         if let Some(selection) = self.detect_by_province(args) {
             return Ok(selection);
         }
 
-        Ok(self.detect_auto(tx))
+        Ok(self.detect_auto(tx).await)
     }
 
     fn spawn_test(
@@ -239,7 +240,7 @@ impl SpeedSource for CmccSource {
             .spawn_test(cfg, node_id_override, tx, prefetched_ip)
     }
 
-    fn run_test(
+    async fn run_test(
         &self,
         selection: &SourceSelection,
         cfg: RuntimeConfig,
@@ -249,6 +250,6 @@ impl SpeedSource for CmccSource {
         prefetched_ip: Option<String>,
     ) {
         self.build_tester(selection)
-            .run_test(cfg, node_id_override, tx, stop, prefetched_ip)
+            .run_test(cfg, node_id_override, tx, stop, prefetched_ip).await
     }
 }

@@ -1,6 +1,8 @@
 use super::types::NodeInfo;
 use super::SpeedTester;
 use crate::source::cmcc_types::{ApiResponse, BeginTestData};
+use anyhow::{Context, Result};
+use tracing::warn;
 
 pub(super) struct DefaultNodeRequest<'a> {
     pub ip: &'a str,
@@ -37,7 +39,26 @@ impl<'a> SpeedtestApi<'a> {
         Self { tester }
     }
 
-    pub(super) fn get_ip_info(
+    async fn post_json(
+        &self,
+        path: &str,
+        payload: serde_json::Value,
+        action: &str,
+    ) -> Result<ApiResponse> {
+        let url = super::join_base(&self.tester.base_url, path);
+        let resp = self.tester.client.post(&url)
+            .headers(self.tester.build_headers())
+            .json(&payload)
+            .send()
+            .await
+            .with_context(|| format!("{} request failed", action))?;
+
+        resp.json::<ApiResponse>()
+            .await
+            .with_context(|| format!("{} response decode failed", action))
+    }
+
+    pub(super) async fn get_ip_info(
         &self,
         province: &str,
         city: &str,
@@ -55,46 +76,44 @@ impl<'a> SpeedtestApi<'a> {
             "operator": isp,
         });
 
-        if let Ok(mut resp) = self
-            .tester
-            .set_headers(self.tester.agent.post(&super::join_base(
-                &self.tester.base_url,
-                self.tester.endpoints.get_ip_info_path,
-            )))
-            .send_json(&payload)
-        {
-            if let Ok(json) = resp.body_mut().read_json::<ApiResponse>() {
+        match self.post_json(
+            self.tester.endpoints.get_ip_info_path,
+            payload,
+            "get ip info",
+        ).await {
+            Ok(json) => {
                 let dbw = json.data["downBandWidth"].as_f64().unwrap_or(0.0) as i64;
                 let ubw = json.data["upBandWidth"].as_f64().unwrap_or(0.0) as i64;
                 let account = json.data["account"].as_str().unwrap_or("-").to_string();
-                return (dbw, ubw, account);
+                (dbw, ubw, account)
+            }
+            Err(err) => {
+                warn!("{:#}", err);
+                (0, 0, "-".to_string())
             }
         }
-
-        (0, 0, "-".to_string())
     }
 
-    pub(super) fn select_nodes_by_city(&self, city: &str) -> Vec<NodeInfo> {
-        if let Ok(mut resp) = self
-            .tester
-            .set_headers(self.tester.agent.post(&super::join_base(
-                &self.tester.base_url,
-                self.tester.endpoints.select_node_by_city_path,
-            )))
-            .send_json(serde_json::json!({"city": city}))
-        {
-            if let Ok(json) = resp.body_mut().read_json::<ApiResponse>() {
+    pub(super) async fn select_nodes_by_city(&self, city: &str) -> Vec<NodeInfo> {
+        match self.post_json(
+            self.tester.endpoints.select_node_by_city_path,
+            serde_json::json!({"city": city}),
+            "select nodes by city",
+        ).await {
+            Ok(json) => {
                 let mut nodes =
                     serde_json::from_value::<Vec<NodeInfo>>(json.data).unwrap_or_default();
                 nodes.sort_by(|a, b| b.status.cmp(&a.status).then_with(|| a.id.cmp(&b.id)));
-                return nodes;
+                nodes
+            }
+            Err(err) => {
+                warn!("{:#}", err);
+                vec![]
             }
         }
-
-        vec![]
     }
 
-    pub(super) fn get_default_node(&self, req: &DefaultNodeRequest<'_>) -> Option<NodeInfo> {
+    pub(super) async fn get_default_node(&self, req: &DefaultNodeRequest<'_>) -> Option<NodeInfo> {
         let payload = serde_json::json!({
             "ip": req.ip,
             "city": req.city,
@@ -111,23 +130,20 @@ impl<'a> SpeedtestApi<'a> {
             "mode": "Down",
         });
 
-        if let Ok(mut resp) = self
-            .tester
-            .set_headers(self.tester.agent.post(&super::join_base(
-                &self.tester.base_url,
-                self.tester.endpoints.get_default_node_path,
-            )))
-            .send_json(&payload)
-        {
-            if let Ok(json) = resp.body_mut().read_json::<ApiResponse>() {
-                return serde_json::from_value(json.data).ok();
+        match self.post_json(
+            self.tester.endpoints.get_default_node_path,
+            payload,
+            "get default node",
+        ).await {
+            Ok(json) => serde_json::from_value(json.data).ok(),
+            Err(err) => {
+                warn!("{:#}", err);
+                None
             }
         }
-
-        None
     }
 
-    pub(super) fn begin_test(&self, req: &BeginTestRequest<'_>) -> Option<BeginTestData> {
+    pub(super) async fn begin_test(&self, req: &BeginTestRequest<'_>) -> Option<BeginTestData> {
         let payload = serde_json::json!({
             "dbw": req.dbw,
             "ubw": req.ubw,
@@ -144,19 +160,12 @@ impl<'a> SpeedtestApi<'a> {
             "taskId": req.task_id,
         });
 
-        if let Ok(mut resp) = self
-            .tester
-            .set_headers(self.tester.agent.post(&super::join_base(
-                &self.tester.base_url,
-                self.tester.endpoints.begin_test_path,
-            )))
-            .send_json(&payload)
-        {
-            if let Ok(json) = resp.body_mut().read_json::<ApiResponse>() {
-                return self.tester.parse_begin_test(json.data);
+        match self.post_json(self.tester.endpoints.begin_test_path, payload, "begin test").await {
+            Ok(json) => self.tester.parse_begin_test(json.data),
+            Err(err) => {
+                warn!("{:#}", err);
+                None
             }
         }
-
-        None
     }
 }

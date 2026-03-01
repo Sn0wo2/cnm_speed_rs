@@ -1,6 +1,7 @@
 use crate::source::SourceRuntime;
 use crate::speedtest::types::{ProgressEvent, RuntimeConfig};
 use crate::tui;
+use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::{
     event::{
@@ -10,18 +11,17 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use log::{error, info, warn};
-use std::sync::mpsc;
 use std::{
     io,
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tokio::sync::mpsc;
+use tracing::{error, info, warn};
 
 pub mod logging;
 pub mod types;
-
-use logging::init_logging;
+use crate::app::logging::LoggerManager;
 use types::Args;
 
 type SharedState = Arc<Mutex<tui::AppState>>;
@@ -30,11 +30,13 @@ pub struct AppRuntime {
     pub state: SharedState,
     pub source_runtime: SourceRuntime,
     pub rx: mpsc::Receiver<ProgressEvent>,
+    pub _logger: LoggerManager,
 }
 
 impl AppRuntime {
-    pub fn new(args: &Args) -> Self {
-        let (tx, rx) = mpsc::channel::<ProgressEvent>();
+    pub fn new(args: &Args) -> (Self, mpsc::Sender<ProgressEvent>) {
+        let (tx, rx) = mpsc::channel::<ProgressEvent>(100);
+        let logger = LoggerManager::init().expect("initializing loggers");
         let state = Arc::new(Mutex::new(tui::AppState::new(
             "(detecting...)".into(),
             "Auto".into(),
@@ -46,19 +48,20 @@ impl AppRuntime {
             s.settings.concurrency = args.concurrency;
         }
 
-        Self {
+        (Self {
             state,
             source_runtime: SourceRuntime::new(tx.clone()),
             rx,
-        }
+            _logger: logger,
+        }, tx)
     }
 
     pub fn bootstrap_detection(&self, args: Args) {
         self.source_runtime.bootstrap_detection(args);
     }
 
-    pub fn run_loop(
-        &self,
+    pub async fn run_loop(
+        &mut self,
         terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
     ) {
         'app: loop {
@@ -72,18 +75,19 @@ impl AppRuntime {
                 break 'app;
             }
 
-            if !event::poll(Duration::from_millis(50)).unwrap_or(false) {
+            if !event::poll(Duration::from_millis(16)).unwrap_or(false) {
+                tokio::task::yield_now().await;
                 continue;
             }
 
             match event::read() {
                 Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
-                    if self.handle_key(k) {
+                    if self.handle_key(k).await {
                         break 'app;
                     }
                 }
                 Ok(Event::Mouse(m)) => {
-                    if self.handle_mouse(m) {
+                    if self.handle_mouse(m).await {
                         break 'app;
                     }
                 }
@@ -93,7 +97,7 @@ impl AppRuntime {
         }
     }
 
-    pub fn handle_key(&self, key: KeyEvent) -> bool {
+    pub async fn handle_key(&self, key: KeyEvent) -> bool {
         if self.handle_settings_key(key) {
             return false;
         }
@@ -120,7 +124,7 @@ impl AppRuntime {
                 let mut s = self.state.lock().unwrap();
                 tui::select_next_node(&mut s);
             }
-            KeyCode::Enter | KeyCode::Char('s') => self.toggle_test(None),
+            KeyCode::Enter | KeyCode::Char('s') => self.toggle_test(None).await,
             KeyCode::Char('c') => {
                 let mut s = self.state.lock().unwrap();
                 tui::copy_results_to_clipboard(&mut s);
@@ -158,7 +162,7 @@ impl AppRuntime {
         true
     }
 
-    pub fn handle_mouse(&self, mouse: MouseEvent) -> bool {
+    pub async fn handle_mouse(&self, mouse: MouseEvent) -> bool {
         if !matches!(mouse.kind, MouseEventKind::Down(_)) {
             return false;
         }
@@ -188,15 +192,15 @@ impl AppRuntime {
         }
     }
 
-    pub fn toggle_test(&self, selected_node: Option<Option<String>>) {
+    pub async fn toggle_test(&self, selected_node: Option<Option<String>>) {
         let runtime_cfg = {
             let s = self.state.lock().unwrap();
             s.settings.clone()
         };
-        self.toggle_test_with(runtime_cfg, selected_node.unwrap_or(None));
+        self.toggle_test_with(runtime_cfg, selected_node.unwrap_or(None)).await;
     }
 
-    pub fn toggle_test_with(&self, runtime_cfg: RuntimeConfig, selected_node: Option<String>) {
+    pub async fn toggle_test_with(&self, runtime_cfg: RuntimeConfig, selected_node: Option<String>) {
         let mut s = self.state.lock().unwrap();
         if s.running {
             drop(s);
@@ -222,39 +226,35 @@ impl AppRuntime {
     }
 }
 
-pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run() -> Result<()> {
     let args = Args::parse();
 
-    init_logging();
     info!("Boot args: {:?}", args);
     info!("CWD: {:?}", std::env::current_dir());
 
-    let runtime = AppRuntime::new(&args);
+    let (mut runtime, _) = AppRuntime::new(&args);
     runtime.bootstrap_detection(args.clone());
 
-    enable_raw_mode()?;
+    enable_raw_mode().context("failed to enable terminal raw mode")?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+        .context("failed to enter alternate screen")?;
     let backend = tui::backend(stdout);
-    let mut terminal = tui::terminal(backend)?;
+    let mut terminal = tui::terminal(backend).context("failed to create terminal backend")?;
     info!("Entered TUI mode");
 
-    let loop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runtime.run_loop(&mut terminal)
-    }));
+    runtime.run_loop(&mut terminal).await;
 
-    disable_raw_mode()?;
+    disable_raw_mode().context("failed to disable terminal raw mode")?;
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
-    if let Err(panic) = loop_result {
-        error!("Panic in event loop: {:?}", panic);
-        return Err("TUI panicked; see runtime.log".into());
-    }
+    )
+        .context("failed to restore terminal screen")?;
+    terminal
+        .show_cursor()
+        .context("failed to restore cursor visibility")?;
 
     Ok(())
 }

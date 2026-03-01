@@ -1,9 +1,9 @@
 use crate::app::types::Args;
 use crate::speedtest::types::{ActiveTestHandle, ProgressEvent, RuntimeConfig};
+use anyhow::Result;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::thread;
+use tokio::sync::mpsc;
 
 pub mod cmcc;
 pub mod cmcc_types;
@@ -15,12 +15,9 @@ pub struct SourceSelection {
     pub prefetched_ip: String,
 }
 
+#[async_trait::async_trait]
 pub trait SpeedSource: Send + Sync {
-    fn detect(
-        &self,
-        args: &Args,
-        tx: &mpsc::Sender<ProgressEvent>,
-    ) -> Result<SourceSelection, String>;
+    async fn detect(&self, args: &Args, tx: &mpsc::Sender<ProgressEvent>) -> Result<SourceSelection>;
 
     fn spawn_test(
         &self,
@@ -31,7 +28,7 @@ pub trait SpeedSource: Send + Sync {
         prefetched_ip: Option<String>,
     ) -> ActiveTestHandle;
 
-    fn run_test(
+    async fn run_test(
         &self,
         selection: &SourceSelection,
         cfg: RuntimeConfig,
@@ -70,11 +67,14 @@ impl SourceRuntime {
         let source = Arc::clone(&self.source);
         let selection_slot = Arc::clone(&self.selection_slot);
         let tx = self.tx.clone();
-        thread::spawn(move || {
-            let selection = match source.detect(&args, &tx) {
+        tokio::spawn(async move {
+            let selection = match source.detect(&args, &tx).await {
                 Ok(v) => v,
                 Err(err) => {
-                    let _ = tx.send(ProgressEvent::Status(format!("Detect failed: {}", err)));
+                    let _ = tx.send(ProgressEvent::Status(format!(
+                        "Detect failed: {:#}",
+                        err.context("source.detect")
+                    ))).await;
                     return;
                 }
             };
@@ -87,13 +87,13 @@ impl SourceRuntime {
             let _ = tx.send(ProgressEvent::ServerSelected {
                 base_url: selection.base_url.clone(),
                 province_label: selection.label.clone(),
-            });
+            }).await;
 
             let init_source = Arc::clone(&source);
             let init_selection = selection.clone();
             let init_tx = tx.clone();
             let init_ip = selection.prefetched_ip;
-            thread::spawn(move || {
+            tokio::spawn(async move {
                 init_source.run_test(
                     &init_selection,
                     RuntimeConfig {
@@ -104,7 +104,7 @@ impl SourceRuntime {
                     init_tx,
                     Arc::new(AtomicBool::new(false)),
                     Some(init_ip),
-                );
+                ).await;
             });
         });
     }
@@ -122,9 +122,12 @@ impl SourceRuntime {
             let mut active = self.active_handle.lock().unwrap();
             *active = Some(handle);
         } else {
-            let _ = self.tx.send(ProgressEvent::Status(
-                "Server not ready yet (still detecting)...".into(),
-            ));
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let _ = tx.send(ProgressEvent::Status(
+                    "Server not ready yet (still detecting)...".into(),
+                )).await;
+            });
         }
     }
 

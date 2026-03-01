@@ -5,15 +5,13 @@ use crate::speedtest::types::{
 };
 use crate::utils::crypto::CMCCCrypto;
 use crate::utils::stats::{DelayStats, RollingRateWindow, SampleStats};
-use log::{error, info};
 use rand::RngExt;
-use std::io::Read;
+use reqwest::Client;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
-use ureq::Agent;
+use tokio::sync::mpsc;
+use tracing::{error, info};
 
 mod api;
 pub mod types;
@@ -97,22 +95,27 @@ fn parse_ten_gig_flag(value: &serde_json::Value) -> bool {
 }
 
 pub struct SpeedTester {
-    agent: Agent,
-    crypto: CMCCCrypto,
-    base_url: String,
-    origin: String,
-    referer: String,
-    node_port: u16,
-    endpoints: SpeedtestEndpoints,
+    pub client: Client,
+    pub crypto: CMCCCrypto,
+    pub base_url: String,
+    pub origin: String,
+    pub referer: String,
+    pub node_port: u16,
+    pub endpoints: SpeedtestEndpoints,
 }
 
 impl SpeedTester {
     pub fn new(base_url: String, node_port: u16, endpoints: SpeedtestEndpoints) -> Self {
-        let agent = Agent::new_with_defaults();
+        let client = Client::builder()
+            .user_agent(USER_AGENT)
+            .pool_max_idle_per_host(0) // 极度抠门：不保留空闲连接
+            .pool_idle_timeout(Duration::from_secs(1))
+            .build()
+            .unwrap_or_default();
         let origin = base_url.clone();
         let referer = join_base(&base_url, endpoints.task_page_path);
         Self {
-            agent,
+            client,
             crypto: CMCCCrypto::new(),
             base_url,
             origin,
@@ -122,34 +125,25 @@ impl SpeedTester {
         }
     }
 
-    pub fn build_headers(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("Accept", "application/json, text/plain, */*".to_string()),
-            ("Content-Type", "application/json;charset=UTF-8".to_string()),
-            ("User-Agent", USER_AGENT.to_string()),
-            ("Origin", self.origin.clone()),
-            ("Referer", self.referer.clone()),
-        ]
+    pub fn build_headers(&self) -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("Accept", "application/json, text/plain, */*".parse().unwrap());
+        headers.insert("Content-Type", "application/json;charset=UTF-8".parse().unwrap());
+        headers.insert("Origin", self.origin.parse().unwrap());
+        headers.insert("Referer", self.referer.parse().unwrap());
+        headers
     }
 
-    pub fn set_headers<B>(&self, mut req: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
-        for (k, v) in self.build_headers() {
-            req = req.header(k, &v);
-        }
-        req
-    }
-
-    fn fetch_user_ip(&self) -> String {
+    async fn fetch_user_ip(&self) -> String {
         info!("Fetching user IP...");
-        match self
-            .set_headers(
-                self.agent
-                    .get(&join_base(&self.base_url, self.endpoints.get_user_ip_path)),
-            )
-            .call()
+        let url = join_base(&self.base_url, self.endpoints.get_user_ip_path);
+        match self.client.get(&url)
+            .headers(self.build_headers())
+            .send()
+            .await
         {
-            Ok(mut resp) => {
-                if let Ok(json) = resp.body_mut().read_json::<ApiResponse>() {
+            Ok(resp) => {
+                if let Ok(json) = resp.json::<ApiResponse>().await {
                     let ip = json.data.as_str().unwrap_or("").to_string();
                     info!("Got User IP: {}", ip);
                     return ip;
@@ -160,7 +154,7 @@ impl SpeedTester {
         String::new()
     }
 
-    fn parse_begin_test(&self, data: serde_json::Value) -> Option<BeginTestData> {
+    pub fn parse_begin_test(&self, data: serde_json::Value) -> Option<BeginTestData> {
         if data.is_string() {
             let s = data.as_str().unwrap();
             if s == "{}" || s.is_empty() {
@@ -183,13 +177,13 @@ impl SpeedTester {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_clone = Arc::clone(&stop);
         let tester = Arc::clone(self);
-        thread::spawn(move || {
-            tester.run_test(cfg, node_id_override, tx, stop_clone, prefetched_ip);
+        tokio::spawn(async move {
+            tester.run_test(cfg, node_id_override, tx, stop_clone, prefetched_ip).await;
         });
         ActiveTestHandle { stop }
     }
 
-    pub fn run_test(
+    pub async fn run_test(
         &self,
         cfg: RuntimeConfig,
         node_id_override: Option<String>,
@@ -203,39 +197,39 @@ impl SpeedTester {
             is_init, cfg.duration_sec
         );
 
-        let _ = tx.send(ProgressEvent::Status("Connecting...".into()));
+        let _ = tx.send(ProgressEvent::Status("Connecting...".into())).await;
 
-        let user_ip = self.resolve_user_ip(prefetched_ip);
+        let user_ip = self.resolve_user_ip(prefetched_ip).await;
 
         if stop.load(Ordering::Relaxed) {
             return;
         }
 
-        let (province, city, isp) = self.resolve_region(&user_ip);
+        let (province, city, isp) = self.resolve_region(&user_ip).await;
 
         if stop.load(Ordering::Relaxed) {
             return;
         }
 
         let api = SpeedtestApi::new(self);
-        let context = self.load_runtime_context(&api, &province, &city, &isp, &user_ip, &tx);
+        let context = self.load_runtime_context(&api, &province, &city, &isp, &user_ip, &tx).await;
 
         if stop.load(Ordering::Relaxed) {
             return;
         }
 
-        let default_node = self.resolve_default_node(&api, &context, &tx);
+        let default_node = self.resolve_default_node(&api, &context, &tx).await;
         if let Some(ref node) = default_node {
             if !node.node_ip.is_empty() {
-                let _ = tx.send(ProgressEvent::NodeIpUpdate {
+                let _ = tx.send(ProgressEvent::NodeIpFound {
                     node_id: node.node_id.clone(),
                     node_ip: node.node_ip.clone(),
-                });
+                }).await;
             }
         }
 
         if context.nodes.is_empty() && default_node.is_none() {
-            let _ = tx.send(ProgressEvent::Status("Server Error".into()));
+            let _ = tx.send(ProgressEvent::Status("Server Error".into())).await;
             return;
         }
 
@@ -247,30 +241,30 @@ impl SpeedTester {
         let mut node_ip = selected.node_ip.clone();
 
         if is_init {
-            self.prefetch_partial_node_ips(&api, &context, &tx, 3);
+            self.prefetch_partial_node_ips(&api, &context, &tx, 3).await;
         }
 
         if node_ip.is_empty() {
             if let Some(prefetched_ip) =
-                self.prefetch_node_ip_for(&api, &context, selected.node_id.as_str())
+                self.prefetch_node_ip_for(&api, &context, selected.node_id.as_str()).await
             {
                 node_ip = prefetched_ip.clone();
-                let _ = tx.send(ProgressEvent::NodeIpUpdate {
+                let _ = tx.send(ProgressEvent::NodeIpFound {
                     node_id: selected.node_id.clone(),
                     node_ip: prefetched_ip,
-                });
+                }).await;
             }
         }
 
         let ping_count = if is_init { 2 } else { 5 };
-        let (p_idle, j_idle) = self.measure_ping(&node_ip, self.node_port, ping_count);
-        let _ = tx.send(ProgressEvent::PingUpdate {
+        let (p_idle, j_idle) = self.measure_ping(&node_ip, self.node_port, ping_count).await;
+        let _ = tx.send(ProgressEvent::LatencyUpdate {
             ping: p_idle,
             jitter: j_idle,
-        });
+        }).await;
 
         if is_init {
-            let _ = tx.send(ProgressEvent::Status("Ready".into()));
+            let _ = tx.send(ProgressEvent::Status("Ready".into())).await;
             return;
         }
 
@@ -278,14 +272,14 @@ impl SpeedTester {
             return;
         }
 
-        let _ = tx.send(ProgressEvent::Status("Testing...".into()));
-        let down_task = self.begin_download_task(&api, &context, node_id_override.as_deref(), &tx);
+        let _ = tx.send(ProgressEvent::Status("Testing...".into())).await;
+        let down_task = self.begin_download_task(&api, &context, node_id_override.as_deref(), &tx).await;
         let d_task_id = down_task.0;
         let d_node_ip = down_task.1;
         let speed_adjuster = down_task.2;
 
         if d_task_id.is_empty() {
-            let _ = tx.send(ProgressEvent::Status("Task Failed".into()));
+            let _ = tx.send(ProgressEvent::Status("Task Failed".into())).await;
             return;
         }
 
@@ -302,7 +296,7 @@ impl SpeedTester {
                 .as_deref()
                 .unwrap_or(selected.node_id.as_str()),
             &d_task_id,
-        );
+        ).await;
 
         let (dl_res, ul_res) = if cfg.priority == TestPriority::DownloadFirst {
             let dl = self.run_workers(
@@ -316,10 +310,10 @@ impl SpeedTester {
                 cfg.speed_refresh_ms,
                 cfg.ping_refresh_ms,
                 speed_adjuster,
-                cfg.allow_official_cheat_calc,
+                cfg.allow_official_cheat_calculation,
                 tx.clone(),
                 Arc::clone(&stop),
-            );
+            ).await;
             let ul = self.run_workers(
                 false,
                 &final_node_ip,
@@ -331,10 +325,10 @@ impl SpeedTester {
                 cfg.speed_refresh_ms,
                 cfg.ping_refresh_ms,
                 speed_adjuster,
-                cfg.allow_official_cheat_calc,
+                cfg.allow_official_cheat_calculation,
                 tx.clone(),
                 Arc::clone(&stop),
-            );
+            ).await;
             (dl, ul)
         } else {
             let ul = self.run_workers(
@@ -348,10 +342,10 @@ impl SpeedTester {
                 cfg.speed_refresh_ms,
                 cfg.ping_refresh_ms,
                 speed_adjuster,
-                cfg.allow_official_cheat_calc,
+                cfg.allow_official_cheat_calculation,
                 tx.clone(),
                 Arc::clone(&stop),
-            );
+            ).await;
             let dl = self.run_workers(
                 true,
                 &final_node_ip,
@@ -363,10 +357,10 @@ impl SpeedTester {
                 cfg.speed_refresh_ms,
                 cfg.ping_refresh_ms,
                 speed_adjuster,
-                cfg.allow_official_cheat_calc,
+                cfg.allow_official_cheat_calculation,
                 tx.clone(),
                 Arc::clone(&stop),
-            );
+            ).await;
             (dl, ul)
         };
 
@@ -374,7 +368,7 @@ impl SpeedTester {
             return;
         }
 
-        let _ = tx.send(ProgressEvent::Finished(TestResult {
+        let _ = tx.send(ProgressEvent::TestFinished(TestResult {
             dl_avg: dl_res.0,
             dl_max: dl_res.1,
             ul_avg: ul_res.0,
@@ -386,18 +380,18 @@ impl SpeedTester {
             dl_bytes: dl_res.4,
             ul_bytes: ul_res.4,
             loaded_ping_samples: dl_res.5 + ul_res.5,
-        }));
+        })).await;
     }
 
-    fn resolve_user_ip(&self, prefetched_ip: Option<String>) -> String {
+    async fn resolve_user_ip(&self, prefetched_ip: Option<String>) -> String {
         if let Some(ip) = prefetched_ip.filter(|value| !value.is_empty()) {
             info!("Using prefetched IP: {}", ip);
             return ip;
         }
-        self.fetch_user_ip()
+        self.fetch_user_ip().await
     }
 
-    fn resolve_region(&self, user_ip: &str) -> (String, String, String) {
+    async fn resolve_region(&self, user_ip: &str) -> (String, String, String) {
         if user_ip.is_empty() {
             return ("Unknown".into(), "Unknown".into(), "Unknown".into());
         }
@@ -409,8 +403,12 @@ impl SpeedTester {
             urlencoding::encode(&enc_ip)
         );
 
-        if let Ok(mut resp) = self.set_headers(self.agent.get(&region_url)).call() {
-            if let Ok(json) = resp.body_mut().read_json::<ApiResponse>() {
+        if let Ok(resp) = self.client.get(&region_url)
+            .headers(self.build_headers())
+            .send()
+            .await
+        {
+            if let Ok(json) = resp.json::<ApiResponse>().await {
                 if let Some(plain) = json.data.as_str().map(|value| self.crypto.decrypt(value)) {
                     let parts: Vec<&str> = plain.split('|').collect();
                     if parts.len() >= 2 {
@@ -427,7 +425,7 @@ impl SpeedTester {
         ("Unknown".into(), "Unknown".into(), "Unknown".into())
     }
 
-    fn load_runtime_context(
+    async fn load_runtime_context(
         &self,
         api: &SpeedtestApi<'_>,
         province: &str,
@@ -436,15 +434,15 @@ impl SpeedTester {
         user_ip: &str,
         tx: &mpsc::Sender<ProgressEvent>,
     ) -> RuntimeContext {
-        let (dbw, ubw, account) = api.get_ip_info(province, city, isp, user_ip);
-        let nodes = api.select_nodes_by_city(city);
-        let _ = tx.send(ProgressEvent::Info {
+        let (dbw, ubw, account) = api.get_ip_info(province, city, isp, user_ip).await;
+        let nodes = api.select_nodes_by_city(city).await;
+        let _ = tx.send(ProgressEvent::UserInfo {
             user: account.clone(),
             ip: user_ip.to_string(),
             city: city.to_string(),
             bw: format!("{}/{}M", dbw, ubw),
-        });
-        let _ = tx.send(ProgressEvent::Nodes(nodes.clone()));
+        }).await;
+        let _ = tx.send(ProgressEvent::NodesUpdate(nodes.clone())).await;
 
         RuntimeContext {
             province: province.to_string(),
@@ -458,7 +456,7 @@ impl SpeedTester {
         }
     }
 
-    fn resolve_default_node(
+    async fn resolve_default_node(
         &self,
         api: &SpeedtestApi<'_>,
         context: &RuntimeContext,
@@ -472,21 +470,21 @@ impl SpeedTester {
             up_bw: context.ubw,
             operator: &context.isp,
             province: &context.province,
-        });
+        }).await;
 
         if let Some(ref selected) = node {
             if !selected.node_ip.is_empty() {
-                let _ = tx.send(ProgressEvent::NodeIpUpdate {
+                let _ = tx.send(ProgressEvent::NodeIpFound {
                     node_id: selected.node_id.clone(),
                     node_ip: selected.node_ip.clone(),
-                });
+                }).await;
             }
         }
 
         node
     }
 
-    fn begin_download_task(
+    async fn begin_download_task(
         &self,
         api: &SpeedtestApi<'_>,
         context: &RuntimeContext,
@@ -507,12 +505,12 @@ impl SpeedTester {
             is_use_plug: 0,
             network_type: "",
             task_id: None,
-        }) {
+        }).await {
             if !data.node_ip.is_empty() {
-                let _ = tx.send(ProgressEvent::NodeIpUpdate {
+                let _ = tx.send(ProgressEvent::NodeIpFound {
                     node_id: data.node_id.clone(),
                     node_ip: data.node_ip.clone(),
-                });
+                }).await;
             }
             let adjuster = SpeedAdjuster::from_begin_data(&data);
             return (data.task_id, data.node_ip, adjuster);
@@ -525,7 +523,7 @@ impl SpeedTester {
         )
     }
 
-    fn prefetch_partial_node_ips(
+    async fn prefetch_partial_node_ips(
         &self,
         api: &SpeedtestApi<'_>,
         context: &RuntimeContext,
@@ -544,17 +542,17 @@ impl SpeedTester {
             if node.node_id.is_empty() {
                 continue;
             }
-            if let Some(node_ip) = self.prefetch_node_ip_for(api, context, node.node_id.as_str()) {
-                let _ = tx.send(ProgressEvent::NodeIpUpdate {
+            if let Some(node_ip) = self.prefetch_node_ip_for(api, context, node.node_id.as_str()).await {
+                let _ = tx.send(ProgressEvent::NodeIpFound {
                     node_id: node.node_id.clone(),
                     node_ip,
-                });
+                }).await;
                 prefetched += 1;
             }
         }
     }
 
-    fn prefetch_node_ip_for(
+    async fn prefetch_node_ip_for(
         &self,
         api: &SpeedtestApi<'_>,
         context: &RuntimeContext,
@@ -574,17 +572,17 @@ impl SpeedTester {
             is_use_plug: 0,
             network_type: "",
             task_id: None,
-        })
-        .and_then(|data| {
-            if data.node_ip.is_empty() {
-                None
-            } else {
-                Some(data.node_ip)
-            }
-        })
+        }).await
+            .and_then(|data| {
+                if data.node_ip.is_empty() {
+                    None
+                } else {
+                    Some(data.node_ip)
+                }
+            })
     }
 
-    fn begin_upload_task(
+    async fn begin_upload_task(
         &self,
         api: &SpeedtestApi<'_>,
         context: &RuntimeContext,
@@ -605,29 +603,26 @@ impl SpeedTester {
             is_use_plug: 0,
             network_type: "",
             task_id: Some(down_task_id),
-        })
-        .map(|data| data.task_id)
-        .unwrap_or_else(|| down_task_id.to_string())
+        }).await
+            .map(|data| data.task_id)
+            .unwrap_or_else(|| down_task_id.to_string())
     }
 
-    fn measure_ping(&self, ip: &str, port: u16, count: usize) -> (f64, f64) {
+    async fn measure_ping(&self, ip: &str, port: u16, count: usize) -> (f64, f64) {
         let mut delays = Vec::new();
         let url = node_url(ip, port, self.endpoints.node_ping_path);
         for _ in 0..count {
             let start = Instant::now();
-            if let Ok(resp) = self
-                .agent
-                .get(&url)
-                .config()
-                .timeout_global(Some(Duration::from_secs(2)))
-                .build()
-                .call()
+            if let Ok(resp) = self.client.get(&url)
+                .timeout(Duration::from_secs(2))
+                .send()
+                .await
             {
                 if resp.status() == 200 {
                     delays.push(start.elapsed().as_secs_f64() * 1000.0);
                 }
             }
-            thread::sleep(Duration::from_millis(100));
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
         if delays.is_empty() {
             return (0.0, 0.0);
@@ -641,7 +636,7 @@ impl SpeedTester {
         (avg, jitter)
     }
 
-    fn run_workers(
+    async fn run_workers(
         &self,
         is_dl: bool,
         node_ip: &str,
@@ -653,7 +648,7 @@ impl SpeedTester {
         speed_refresh_ms: u64,
         ping_refresh_ms: u64,
         speed_adjuster: SpeedAdjuster,
-        allow_official_cheat_calc: bool,
+        allow_official_cheat_calculation: bool,
         tx: mpsc::Sender<ProgressEvent>,
         stop: Arc<AtomicBool>,
     ) -> (f64, f64, f64, f64, u64, usize) {
@@ -668,12 +663,25 @@ impl SpeedTester {
         let mut handles = Vec::new();
         let origin = self.origin.clone();
         let referer = self.referer.clone();
+        let client = self.client.clone();
+
+        // Memory Optimization: Pre-allocate ONE shared upload buffer for all workers
+        let up_data = if !is_dl {
+            let mut up_data_raw = vec![0u8; 1024 * 1024]; // 下调至 1MB
+            rand::rng().fill(&mut up_data_raw[..]);
+            Some(bytes::Bytes::from(up_data_raw))
+        } else {
+            None
+        };
+
         for _ in 0..concurrency {
             let tb = Arc::clone(&total_bytes);
             let stop_worker = Arc::clone(&stop);
             let cancel_worker = Arc::clone(&cancel);
             let origin = origin.clone();
             let referer = referer.clone();
+            let client = client.clone();
+            let up_data_shared = up_data.clone(); // Cheap Arc-based clone
             let path = if is_dl {
                 self.endpoints.node_download_path
             } else {
@@ -681,60 +689,48 @@ impl SpeedTester {
             };
             let url = format!("{}?taskId={}", node_url(node_ip, port, path), task_id);
 
-            handles.push(thread::spawn(move || {
-                // Keep one HTTP client per worker so TCP connections can be reused
-                // across loop iterations instead of creating fresh clients repeatedly.
-                let agent = Agent::new_with_defaults();
-
-                let mut up_data = vec![0u8; 2 * 1024 * 1024];
-                if !is_dl {
-                    rand::rng().fill(&mut up_data[..]);
-                }
+            handles.push(tokio::spawn(async move {
                 while Instant::now() < end_time {
                     if cancel_worker.load(Ordering::Relaxed) || stop_worker.load(Ordering::Relaxed)
                     {
                         break;
                     }
                     if is_dl {
-                        if let Ok(resp) = agent
-                            .get(&url)
+                        if let Ok(resp) = client.get(&url)
                             .header("Accept", "*/*")
-                            .header("User-Agent", USER_AGENT)
                             .header("Origin", &origin)
                             .header("Referer", &referer)
-                            .header("Connection", "keep-alive")
-                            .config()
-                            .timeout_global(Some(Duration::from_secs(10)))
-                            .build()
-                            .call()
+                            .send()
+                            .await
                         {
-                            let mut body = resp.into_body();
-                            let mut reader = body.as_reader();
-                            let mut buf = [0u8; 65536];
-                            while let Ok(n) = reader.read(&mut buf) {
-                                if n == 0 || Instant::now() >= end_time {
+                            let mut stream = resp.bytes_stream();
+                            use futures::StreamExt;
+                            while let Some(item) = stream.next().await {
+                                if let Ok(chunk) = item {
+                                    let chunk: bytes::Bytes = chunk;
+                                    tb.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                                }
+                                if Instant::now() >= end_time {
                                     break;
                                 }
-                                tb.fetch_add(n as u64, Ordering::Relaxed);
                             }
                         }
                     } else {
-                        if let Ok(resp) = agent
-                            .post(&url)
+                        // Use the shared buffer
+                        let body_data = up_data_shared.as_ref().cloned().unwrap_or_default();
+                        if let Ok(resp) = client.post(&url)
                             .header("Accept", "*/*")
-                            .header("User-Agent", USER_AGENT)
                             .header("Origin", &origin)
                             .header("Referer", &referer)
                             .header("Content-Type", "application/octet-stream")
-                            .header("Connection", "keep-alive")
-                            .config()
-                            .timeout_global(Some(Duration::from_secs(10)))
-                            .build()
-                            .send(&up_data)
+                            .body(body_data)
+                            .send()
+                            .await
                         {
-                            if resp.status() == 200 {
-                                tb.fetch_add(up_data.len() as u64, Ordering::Relaxed);
-                            }
+                        if resp.status() == 200 {
+                            tb.fetch_add(1024 * 1024, Ordering::Relaxed);
+                        }
+
                         }
                     }
                 }
@@ -749,36 +745,35 @@ impl SpeedTester {
         let origin_ping = self.origin.clone();
         let referer_ping = self.referer.clone();
         let ping_url = node_url(node_ip, port, self.endpoints.node_ping_path);
+        let client_ping = self.client.clone();
 
-        thread::spawn(move || {
-            let ping_agent = Agent::new_with_defaults();
+        tokio::spawn(async move {
             while Instant::now() < end_time {
                 if cancel_ping.load(Ordering::Relaxed) || stop_ping.load(Ordering::Relaxed) {
                     break;
                 }
                 let p_start = Instant::now();
-                if let Ok(resp) = ping_agent
-                    .get(&ping_url)
+                if let Ok(resp) = client_ping.get(&ping_url)
                     .header("Accept", "*/*")
-                    .header("User-Agent", USER_AGENT)
                     .header("Origin", &origin_ping)
                     .header("Referer", &referer_ping)
-                    .config()
-                    .timeout_global(Some(Duration::from_secs(2)))
-                    .build()
-                    .call()
+                    .send()
+                    .await
                 {
                     if resp.status() == 200 {
                         let d = p_start.elapsed().as_secs_f64() * 1000.0;
-                        let mut lock = ld_clone.lock().unwrap();
-                        lock.push(d);
-                        let avg = lock.iter().sum::<f64>() / lock.len() as f64;
-                        let jitter =
-                            lock.iter().map(|&x| (x - avg).abs()).sum::<f64>() / lock.len() as f64;
-                        let _ = tx_ping.send(ProgressEvent::PingUpdate { ping: d, jitter });
+                        let (_avg, jitter) = {
+                            let mut lock = ld_clone.lock().unwrap();
+                            lock.push(d);
+                            let avg = lock.iter().sum::<f64>() / lock.len() as f64;
+                            let jitter =
+                                lock.iter().map(|&x| (x - avg).abs()).sum::<f64>() / lock.len() as f64;
+                            (avg, jitter)
+                        };
+                        let _ = tx_ping.send(ProgressEvent::LatencyUpdate { ping: d, jitter }).await;
                     }
                 }
-                thread::sleep(Duration::from_millis(ping_refresh_ms.max(50)));
+                tokio::time::sleep(Duration::from_millis(ping_refresh_ms.max(50))).await;
             }
         });
 
@@ -791,7 +786,7 @@ impl SpeedTester {
             if stop.load(Ordering::Relaxed) {
                 break;
             }
-            thread::sleep(Duration::from_millis((interval * 1000.0) as u64));
+            tokio::time::sleep(Duration::from_millis((interval * 1000.0) as u64)).await;
             let now = Instant::now();
             let current_bytes = total_bytes.load(Ordering::Relaxed);
             let dt = now.duration_since(last_time).as_secs_f64();
@@ -800,7 +795,7 @@ impl SpeedTester {
                 rolling.push(db, dt);
                 let win_speed = rolling.bits_per_sec();
                 let raw_mbps = win_speed / 1_000_000.0;
-                let display_mbps = if allow_official_cheat_calc {
+                let display_mbps = if allow_official_cheat_calculation {
                     if is_dl {
                         speed_adjuster.adjust_download_mbps(raw_mbps)
                     } else {
@@ -816,16 +811,16 @@ impl SpeedTester {
                 let ratio = (now.duration_since(start_time).as_secs_f64() / duration_sec as f64)
                     .min(1.0) as f32;
                 let _ = tx.send(if is_dl {
-                    ProgressEvent::DownloadProgress {
+                    ProgressEvent::DownloadUpdate {
                         ratio,
                         speed: display_mbps,
                     }
                 } else {
-                    ProgressEvent::UploadProgress {
+                    ProgressEvent::UploadUpdate {
                         ratio,
                         speed: display_mbps,
                     }
-                });
+                }).await;
                 last_bytes = current_bytes;
                 last_time = now;
             }
@@ -833,7 +828,7 @@ impl SpeedTester {
 
         cancel.store(true, Ordering::Relaxed);
         for h in handles {
-            let _ = h.join();
+            let _ = h.await;
         }
 
         if samples.is_empty() {
