@@ -5,7 +5,7 @@ use crate::speedtest::types::{
 };
 use crate::utils::crypto::CMCCCrypto;
 use crate::utils::stats::{DelayStats, RollingRateWindow, SampleStats};
-use rand::RngExt;
+use rand::Rng as _;
 use reqwest::Client;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

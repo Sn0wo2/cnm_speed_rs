@@ -2,7 +2,7 @@ use aes::Aes128;
 use base64::{engine::general_purpose, Engine as _};
 use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyInit, KeyIvInit};
 use des::TdesEde3;
-use rand::{distr::Alphanumeric, rng, RngExt};
+use rand::{distr::Alphanumeric, rng, Rng as _};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type TdesCbcEnc = cbc::Encryptor<TdesEde3>;
