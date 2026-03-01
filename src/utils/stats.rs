@@ -1,8 +1,13 @@
 use std::collections::VecDeque;
 
+#[derive(Clone, Copy)]
+struct RateSample {
+    bytes: u64,
+    seconds: f64,
+}
+
 pub struct RollingRateWindow {
-    bytes: VecDeque<u64>,
-    times: VecDeque<f64>,
+    samples: VecDeque<RateSample>,
     sum_bytes: u64,
     sum_time: f64,
     capacity: usize,
@@ -11,8 +16,7 @@ pub struct RollingRateWindow {
 impl RollingRateWindow {
     pub fn new(capacity: usize) -> Self {
         Self {
-            bytes: VecDeque::with_capacity(capacity),
-            times: VecDeque::with_capacity(capacity),
+            samples: VecDeque::with_capacity(capacity),
             sum_bytes: 0,
             sum_time: 0.0,
             capacity,
@@ -20,17 +24,14 @@ impl RollingRateWindow {
     }
 
     pub fn push(&mut self, bytes: u64, seconds: f64) {
-        if self.bytes.len() == self.capacity {
-            if let Some(old) = self.bytes.pop_front() {
-                self.sum_bytes = self.sum_bytes.saturating_sub(old);
-            }
-            if let Some(old) = self.times.pop_front() {
-                self.sum_time = (self.sum_time - old).max(0.0);
+        if self.samples.len() == self.capacity {
+            if let Some(old) = self.samples.pop_front() {
+                self.sum_bytes = self.sum_bytes.saturating_sub(old.bytes);
+                self.sum_time = (self.sum_time - old.seconds).max(0.0);
             }
         }
 
-        self.bytes.push_back(bytes);
-        self.times.push_back(seconds);
+        self.samples.push_back(RateSample { bytes, seconds });
         self.sum_bytes = self.sum_bytes.saturating_add(bytes);
         self.sum_time += seconds;
     }
@@ -52,43 +53,41 @@ impl SampleStats {
     pub fn from_samples(
         samples: &[(f64, f64)],
         duration_sec: u64,
-        smoothing_window_sec: f64,
+        _smoothing_window_sec: f64,
     ) -> Self {
-        let stable: Vec<f64> = samples
-            .iter()
-            .filter(|sample| sample.0 >= (duration_sec as f64 * 0.3).min(2.0))
-            .map(|sample| sample.1)
-            .collect();
-
-        let stable = if stable.is_empty() {
-            samples.iter().map(|sample| sample.1).collect()
-        } else {
-            stable
-        };
-
-        let mut sorted = stable.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-        let trim_ratio = if smoothing_window_sec >= 2.5 {
-            0.1
-        } else {
-            0.05
-        };
-        let start = (sorted.len() as f64 * trim_ratio) as usize;
-        let end = (sorted.len() as f64 * (1.0 - trim_ratio)) as usize;
-        let trimmed = if end > start {
-            &sorted[start..end.max(start + 1)]
-        } else {
-            &sorted
-        };
-
-        Self {
-            avg_bps: trimmed.iter().sum::<f64>() / trimmed.len() as f64,
-            max_bps: *stable
-                .iter()
-                .max_by(|a, b| a.partial_cmp(b).unwrap())
-                .unwrap_or(&0.0),
+        let start = std::time::Instant::now();
+        if samples.is_empty() {
+            return Self {
+                avg_bps: 0.0,
+                max_bps: 0.0,
+            };
         }
+
+        let start_threshold = (duration_sec as f64 * 0.3).min(2.0);
+
+        let mut max_bps = 0.0f64;
+        let mut stable_sum = 0.0f64;
+        let mut stable_count = 0usize;
+
+        for &(ts, bps) in samples {
+            if bps > max_bps {
+                max_bps = bps;
+            }
+            if ts >= start_threshold {
+                stable_sum += bps;
+                stable_count += 1;
+            }
+        }
+
+        let avg_bps = if stable_count > 0 {
+            stable_sum / stable_count as f64
+        } else {
+            samples.iter().map(|s| s.1).sum::<f64>() / samples.len() as f64
+        };
+
+        let res = Self { avg_bps, max_bps };
+        tracing::debug!("Stats processed in {:?}", start.elapsed());
+        res
     }
 }
 

@@ -54,11 +54,13 @@ impl CMCCCrypto {
 
     #[allow(dead_code)]
     pub fn encrypt_task_id(&self, data: &str) -> String {
+        let start = std::time::Instant::now();
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis()
             .to_string();
+
         let data_enc = urlencoding::encode(data);
         let raw = format!("{}${}", data_enc, ts);
         let raw_b64 = general_purpose::STANDARD.encode(raw);
@@ -77,30 +79,33 @@ impl CMCCCrypto {
             .unwrap();
         let ct_b64 = general_purpose::STANDARD.encode(ct);
 
-        let mut p = ct_b64.chars().collect::<Vec<char>>();
-        let insert_pos = rng().random_range(1..=20).min(p.len());
+        // Replace the expensive O(n^2) Vec<char>::insert with a single pass
+        let insert_pos = rng().random_range(1..=20).min(ct_b64.len());
 
-        // Match JS insert logic
-        let rand_key_chars: Vec<char> = rand_key.chars().collect();
-        let ts_chars: Vec<char> = ts.chars().collect();
-        for (i, &c) in rand_key_chars.iter().enumerate() {
-            p.insert(insert_pos + i, c);
-        }
-        for (i, &c) in ts_chars.iter().enumerate() {
-            p.insert(insert_pos + rand_key_chars.len() + i, c);
-        }
+        let mut p = String::with_capacity(ct_b64.len() + rand_key.len() + ts.len());
+        p.push_str(&ct_b64[..insert_pos]);
+        p.push_str(&rand_key);
+        p.push_str(&ts);
+        p.push_str(&ct_b64[insert_pos..]);
 
-        let c_str: String = p.into_iter().rev().collect();
+        let c_str: String = p.chars().rev().collect();
         let g = format!("{},{}.{}", insert_pos, c_str, rand_key.len());
 
-        let mut w = g.chars().collect::<Vec<char>>();
-        let h: String = w.drain(0..3).collect();
-        let v = w.into_iter().collect::<String>() + &h;
+        // Optimized character rotating logic
+        let mut w: Vec<char> = g.chars().collect();
+        if w.len() >= 3 {
+            let h: Vec<char> = w.drain(0..3).collect();
+            w.extend(h);
+        }
+        let v: String = w.into_iter().collect();
 
         let f_b64: String = general_purpose::STANDARD.encode(v).chars().rev().collect();
-        f_b64
+        let result: String = f_b64
             .chars()
             .map(|c| (c as u32 + 3) as u8 as char)
-            .collect()
+            .collect();
+
+        tracing::debug!("Task ID encrypted in {:?}", start.elapsed());
+        result
     }
 }
