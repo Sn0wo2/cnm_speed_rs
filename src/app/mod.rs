@@ -37,6 +37,13 @@ impl AppRuntime {
     pub fn new(args: &Args) -> (Self, mpsc::Sender<ProgressEvent>) {
         let (tx, rx) = mpsc::channel::<ProgressEvent>(100);
         let logger = LoggerManager::init().expect("initializing loggers");
+        
+        // Load settings from file or use default
+        let settings = match std::fs::read_to_string("data/settings.json") {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| RuntimeConfig::default()),
+            Err(_) => RuntimeConfig::default(),
+        };
+
         let state = Arc::new(Mutex::new(tui::AppState::new(
             "(detecting...)".into(),
             "Auto".into(),
@@ -44,8 +51,10 @@ impl AppRuntime {
         {
             let mut s = state.lock().unwrap();
             s.status = "Detecting fastest server...".into();
-            s.settings.duration_sec = args.duration;
-            s.settings.concurrency = args.concurrency;
+            s.settings = settings;
+            // Override with CLI args if provided
+            if args.duration != 10 { s.settings.duration_sec = args.duration; }
+            if args.concurrency != 8 { s.settings.concurrency = args.concurrency; }
         }
 
         (Self {
@@ -54,6 +63,13 @@ impl AppRuntime {
             rx,
             _logger: logger,
         }, tx)
+    }
+
+    pub fn save_settings(&self) {
+        let s = self.state.lock().unwrap();
+        let json = serde_json::to_string_pretty(&s.settings).unwrap_or_default();
+        let _ = std::fs::create_dir_all("data");
+        let _ = std::fs::write("data/settings.json", json);
     }
 
     pub fn bootstrap_detection(&self, args: Args) {
@@ -244,6 +260,8 @@ pub async fn run() -> Result<()> {
     info!("Entered TUI mode");
 
     runtime.run_loop(&mut terminal).await;
+
+    runtime.save_settings();
 
     disable_raw_mode().context("failed to disable terminal raw mode")?;
     execute!(

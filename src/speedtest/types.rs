@@ -45,7 +45,7 @@ pub enum TestPriority {
     UploadFirst,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
     pub duration_sec: u64,
     pub concurrency: usize,
