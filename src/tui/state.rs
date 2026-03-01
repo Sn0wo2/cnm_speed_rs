@@ -1,10 +1,12 @@
 use super::types::AppState;
 use crate::speedtest::types::ProgressEvent;
 use crate::utils::format::format_bytes;
+use crate::utils::trend::TrendRenderer;
 use std::collections::VecDeque;
 use std::time::Instant;
 
 pub fn apply_event(state: &mut AppState, ev: ProgressEvent) {
+    let trend_renderer = TrendRenderer::default();
     match ev {
         ProgressEvent::Status(st) => {
             state.status = st.clone();
@@ -29,7 +31,22 @@ pub fn apply_event(state: &mut AppState, ev: ProgressEvent) {
             state.user_context.bandwidth = bw;
         }
         ProgressEvent::NodesUpdate(nodes) => {
-            state.nodes = nodes;
+            for new_node in nodes {
+                if let Some(existing) = state
+                    .nodes
+                    .iter_mut()
+                    .find(|n| n.node_id == new_node.node_id)
+                {
+                    // Update metadata but keep IP if we already have it
+                    existing.name = new_node.name;
+                    existing.status = new_node.status;
+                    if existing.node_ip.is_empty() {
+                        existing.node_ip = new_node.node_ip;
+                    }
+                } else {
+                    state.nodes.push(new_node);
+                }
+            }
             if !state.nodes.is_empty() {
                 state.selected_idx = state.selected_idx.min(state.nodes.len() - 1);
                 state.node = state.nodes[state.selected_idx].name.clone();
@@ -43,7 +60,19 @@ pub fn apply_event(state: &mut AppState, ev: ProgressEvent) {
             state.live_stats.dl_ratio = ratio.clamp(0.0, 1.0);
             state.live_stats.dl_speed = speed.max(0.0);
             state.live_stats.dl_raw_speed = raw_speed.max(0.0);
-            push_history(&mut state.dl_hist, state.live_stats.dl_speed);
+
+            if state.live_stats.dl_trend_start_ratio.is_none()
+                && trend_renderer
+                    .should_start_capture(state.live_stats.dl_ratio, state.live_stats.dl_speed)
+            {
+                state.live_stats.dl_trend_start_ratio = Some(state.live_stats.dl_ratio);
+            }
+
+            // Push all samples, the frontend will resample them based on ratio
+            if state.live_stats.dl_trend_start_ratio.is_some() {
+                push_history(&mut state.dl_hist, state.live_stats.dl_speed, 2000);
+            }
+
             if state.live_stats.dl_ratio >= 1.0 {
                 state.live_stats.dl_final = Some(state.live_stats.dl_speed);
                 state.live_stats.dl_raw_final = Some(state.live_stats.dl_raw_speed);
@@ -57,15 +86,33 @@ pub fn apply_event(state: &mut AppState, ev: ProgressEvent) {
             state.live_stats.ul_ratio = ratio.clamp(0.0, 1.0);
             state.live_stats.ul_speed = speed.max(0.0);
             state.live_stats.ul_raw_speed = raw_speed.max(0.0);
-            push_history(&mut state.ul_hist, state.live_stats.ul_speed);
+
+            if state.live_stats.ul_trend_start_ratio.is_none()
+                && trend_renderer
+                    .should_start_capture(state.live_stats.ul_ratio, state.live_stats.ul_speed)
+            {
+                state.live_stats.ul_trend_start_ratio = Some(state.live_stats.ul_ratio);
+            }
+
+            if state.live_stats.ul_trend_start_ratio.is_some() {
+                push_history(&mut state.ul_hist, state.live_stats.ul_speed, 2000);
+            }
+
             if state.live_stats.ul_ratio >= 1.0 {
                 state.live_stats.ul_final = Some(state.live_stats.ul_speed);
                 state.live_stats.ul_raw_final = Some(state.live_stats.ul_raw_speed);
             }
         }
-        ProgressEvent::LatencyUpdate { ping, jitter } => {
+        ProgressEvent::LatencyUpdate {
+            ping,
+            jitter,
+            failed_count,
+            total_count,
+        } => {
             state.live_stats.ping = ping.max(0.0);
             state.live_stats.jitter = jitter.max(0.0);
+            state.live_stats.packet_failed = failed_count;
+            state.live_stats.packet_total = total_count;
         }
         ProgressEvent::NodeIpFound { node_id, node_ip } => {
             if let Some(node) = state.nodes.iter_mut().find(|n| n.node_id == node_id) {
@@ -87,6 +134,12 @@ pub fn apply_event(state: &mut AppState, ev: ProgressEvent) {
             state.status = "Done".into();
             push_timeline(&mut state.timeline, "Test complete".into());
             state.started_at = None;
+        }
+        ProgressEvent::TestAborted { reason } => {
+            state.running = false;
+            state.started_at = None;
+            state.status = format!("Aborted: {}", reason);
+            push_timeline(&mut state.timeline, format!("Test aborted: {}", reason));
         }
     }
 }
@@ -119,6 +172,10 @@ pub fn start_test(state: &mut AppState) -> Option<Option<String>> {
     state.live_stats.ul_speed = 0.0;
     state.live_stats.dl_ratio = 0.0;
     state.live_stats.ul_ratio = 0.0;
+    state.live_stats.dl_trend_start_ratio = None;
+    state.live_stats.ul_trend_start_ratio = None;
+    state.live_stats.packet_total = 0;
+    state.live_stats.packet_failed = 0;
     state.dl_hist.clear();
     state.ul_hist.clear();
     state.started_at = Some(Instant::now());
@@ -252,8 +309,8 @@ pub fn push_timeline(lines: &mut VecDeque<String>, s: String) {
     lines.push_back(s);
 }
 
-fn push_history(hist: &mut VecDeque<f64>, v: f64) {
-    if hist.len() >= 100 {
+fn push_history(hist: &mut VecDeque<f64>, v: f64, max_len: usize) {
+    if hist.len() >= max_len {
         hist.pop_front();
     }
     hist.push_back(v);

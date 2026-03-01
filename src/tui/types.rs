@@ -41,7 +41,7 @@ pub enum SettingsField {
     Reload,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct UserContext {
     pub name: String,
     pub ip: String,
@@ -49,16 +49,20 @@ pub struct UserContext {
     pub bandwidth: String,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct LiveStats {
     pub ping: f64,
     pub jitter: f64,
+    pub packet_total: usize,
+    pub packet_failed: usize,
     pub dl_speed: f64,
     pub dl_raw_speed: f64,
     pub dl_ratio: f32,
     pub ul_speed: f64,
     pub ul_raw_speed: f64,
     pub ul_ratio: f32,
+    pub dl_trend_start_ratio: Option<f32>,
+    pub ul_trend_start_ratio: Option<f32>,
     pub dl_final: Option<f64>,
     pub dl_raw_final: Option<f64>,
     pub ul_final: Option<f64>,
@@ -84,6 +88,10 @@ pub struct AppState {
     pub ul_hist: VecDeque<f64>,
     pub hits: HitBoxes,
     pub timeline: VecDeque<String>,
+    pub log_scroll_offset: usize,
+    pub log_auto_scroll: bool,
+
+    pub throbber_state: throbber_widgets_tui::ThrobberState,
 
     pub settings: RuntimeConfig,
     pub settings_open: bool,
@@ -106,10 +114,13 @@ impl AppState {
             base_url,
             province_label,
             started_at: None,
-            dl_hist: VecDeque::with_capacity(101),
-            ul_hist: VecDeque::with_capacity(101),
+            dl_hist: VecDeque::with_capacity(1000),
+            ul_hist: VecDeque::with_capacity(1000),
             hits: HitBoxes::empty(),
-            timeline: VecDeque::with_capacity(32),
+            timeline: VecDeque::with_capacity(512),
+            log_scroll_offset: 0,
+            log_auto_scroll: true,
+            throbber_state: throbber_widgets_tui::ThrobberState::default(),
             settings: RuntimeConfig::default(),
             settings_open: false,
             settings_dirty: false,

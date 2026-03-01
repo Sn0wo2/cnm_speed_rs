@@ -1,4 +1,3 @@
-use super::state::start_test;
 use super::types::{AppState, ClickAction};
 use ratatui::layout::{Margin, Rect};
 
@@ -13,10 +12,7 @@ pub fn handle_click(state: &mut AppState, x: u16, y: u16) -> ClickAction {
         if state.running {
             return ClickAction::Start(None);
         }
-        if let Some(node_opt) = start_test(state) {
-            return ClickAction::Start(node_opt);
-        }
-        return ClickAction::None;
+        return ClickAction::Start(None);
     }
     if rect_contains(state.hits.nodes_rect, x, y) {
         select_node_by_click(state, y);

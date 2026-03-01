@@ -1,3 +1,4 @@
 pub mod crypto;
 pub mod format;
 pub mod stats;
+pub mod trend;
