@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local};
 use flate2::{write::GzEncoder, Compression};
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter};
 use std::path::{Path, PathBuf};
+use time::OffsetDateTime;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
@@ -24,7 +24,14 @@ struct MinecraftTime;
 
 impl FormatTime for MinecraftTime {
     fn format_time(&self, writer: &mut Writer<'_>) -> std::fmt::Result {
-        write!(writer, "{}", Local::now().format("%H:%M:%S"))
+        let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+        write!(
+            writer,
+            "{:02}:{:02}:{:02}",
+            now.hour(),
+            now.minute(),
+            now.second()
+        )
     }
 }
 
@@ -35,7 +42,17 @@ impl LoggerManager {
 
         Self::rotate_latest_log(log_dir).context("rotating latest.log")?;
 
-        let current_log_name = format!("{}.{}", Local::now().format("%Y-%m-%d_%H-%M-%S"), LOG_EXT);
+        let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+        let current_log_name = format!(
+            "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}.{}",
+            now.year(),
+            u8::from(now.month()),
+            now.day(),
+            now.hour(),
+            now.minute(),
+            now.second(),
+            LOG_EXT
+        );
         let current_log_path = log_dir.join(&current_log_name);
 
         let file_appender = tracing_appender::rolling::never(log_dir, &current_log_name);
@@ -122,8 +139,19 @@ impl LoggerManager {
         }
 
         let relative = current_log.strip_prefix(log_dir).unwrap_or(current_log);
-        symlink::symlink_file(relative, &latest_path)
-            .with_context(|| format!("creating symlink {}", latest_path.display()))
+
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(relative, &latest_path)
+                .with_context(|| format!("creating symlink {}", latest_path.display()))?;
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(relative, &latest_path)
+                .with_context(|| format!("creating symlink {}", latest_path.display()))?;
+        }
+
+        Ok(())
     }
 
     fn archive_name_for(source: &Path) -> Result<String> {
@@ -133,11 +161,16 @@ impl LoggerManager {
 
         let metadata = fs::metadata(source)
             .with_context(|| format!("reading metadata for {}", source.display()))?;
-        let modified: DateTime<Local> =
-            metadata.modified().context("reading modified time")?.into();
+        let modified = metadata.modified().context("reading modified time")?;
+        let dt: OffsetDateTime = modified.into();
         Ok(format!(
-            "{}.{}",
-            modified.format("%Y-%m-%d_%H-%M-%S"),
+            "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}.{}",
+            dt.year(),
+            u8::from(dt.month()),
+            dt.day(),
+            dt.hour(),
+            dt.minute(),
+            dt.second(),
             LOG_GZ_EXT
         ))
     }
@@ -181,5 +214,6 @@ impl LoggerManager {
                 .with_context(|| format!("removing old plain log {}", path.display()))?;
         }
         Ok(())
+
     }
 }
