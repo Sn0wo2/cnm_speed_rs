@@ -9,10 +9,10 @@ use tokio::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
+use std::sync::Mutex as StdMutex;
 
 const DEFAULT_NODE_PORT: u16 = 18989;
 const DETECT_TIMEOUT_MS: u64 = 900;
-const DETECT_EARLY_EXIT_MS: u128 = 120;
 const DEFAULT_SCHEME: &str = "http";
 const DEFAULT_HOST_PREFIX: &str = "speed";
 const DEFAULT_DOMAIN: &str = "chinamobile.com";
@@ -31,7 +31,9 @@ const NODE_PING_PATH: &str = "/speed/ping";
 const NODE_DOWNLOAD_PATH: &str = "/speed/download";
 const NODE_UPLOAD_PATH: &str = "/speed/upload";
 
-pub struct CmccSource;
+pub struct CmccSource {
+    tester_cache: StdMutex<Option<Arc<SpeedTester>>>,
+}
 
 #[derive(Debug, Clone)]
 struct ProbeResult {
@@ -43,7 +45,9 @@ struct ProbeResult {
 
 impl CmccSource {
     pub fn new() -> Self {
-        Self
+        Self {
+            tester_cache: StdMutex::new(None),
+        }
     }
 
     pub fn build_base_url_for_province(&self, province_code: &str) -> String {
@@ -77,11 +81,20 @@ impl CmccSource {
     }
 
     pub fn build_tester(&self, selection: &SourceSelection) -> Arc<SpeedTester> {
-        Arc::new(SpeedTester::new(
+        let mut cache = self.tester_cache.lock().unwrap();
+        if let Some(tester) = cache.as_ref() {
+            if tester.base_url == selection.base_url {
+                return Arc::clone(tester);
+            }
+        }
+        
+        let tester = Arc::new(SpeedTester::new(
             selection.base_url.clone(),
             DEFAULT_NODE_PORT,
             self.build_endpoints(),
-        ))
+        ));
+        *cache = Some(Arc::clone(&tester));
+        tester
     }
 
     pub fn detect_forced(&self, args: &Args) -> Option<SourceSelection> {
@@ -147,8 +160,10 @@ impl CmccSource {
 
         let mut best: Option<ProbeResult> = None;
         let mut received = 0usize;
+        let mut last_reported = 0usize;
+        
         let _ = tx.send(ProgressEvent::Status(
-            "Detecting server... (0 replies)".into(),
+            "Detecting fastest server...".into(),
         )).await;
 
         while Instant::now() < deadline {
@@ -156,34 +171,23 @@ impl CmccSource {
             match tokio::time::timeout(remaining.min(Duration::from_millis(250)), rrx.recv()).await {
                 Ok(Some(probe)) => {
                     received += 1;
-                    info!(
-                        "Probe ok province={} latency={}ms url={} ip={}",
-                        probe.label, probe.latency_ms, probe.base_url, probe.user_ip
-                    );
-                    if best
-                        .as_ref()
-                        .map(|b| probe.latency_ms < b.latency_ms)
-                        .unwrap_or(true)
-                    {
+                    if best.as_ref().map_or(true, |b| probe.latency_ms < b.latency_ms) {
                         best = Some(probe);
                     }
-                    if let Some(best_probe) = &best {
-                        let _ = tx.send(ProgressEvent::Status(format!(
-                            "Detecting server... ({} replies, best: {} {}ms)",
-                            received, best_probe.label, best_probe.latency_ms
-                        ))).await;
-                        if best_probe.latency_ms <= DETECT_EARLY_EXIT_MS {
-                            break;
+                    
+                    // Only report if count changed significantly or we got a new best
+                    if received != last_reported {
+                        if let Some(best_probe) = &best {
+                            let _ = tx.send(ProgressEvent::Status(format!(
+                                "Detecting server... ({} replies, best: {} {}ms)",
+                                received, best_probe.label, best_probe.latency_ms
+                            ))).await;
                         }
+                        last_reported = received;
                     }
                 }
                 _ => {
-                    if received > 0 {
-                         let _ = tx.send(ProgressEvent::Status(format!(
-                            "Detecting server... ({} replies)",
-                            received
-                        ))).await;
-                    }
+                    if remaining.as_millis() < 50 { break; }
                 }
             }
         }

@@ -91,30 +91,35 @@ impl SampleStats {
     }
 }
 
-pub struct DelayStats {
-    pub avg_ms: f64,
-    pub jitter_ms: f64,
+#[derive(Clone, Copy, Default)]
+pub struct OnlineDelayStats {
+    count: usize,
+    mean_ms: f64,
+    m2: f64,
 }
 
-impl DelayStats {
-    pub fn from_values(values: &[f64]) -> Self {
-        if values.is_empty() {
-            return Self {
-                avg_ms: 0.0,
-                jitter_ms: 0.0,
-            };
-        }
+impl OnlineDelayStats {
+    pub fn push(&mut self, value_ms: f64) {
+        self.count += 1;
+        let delta = value_ms - self.mean_ms;
+        self.mean_ms += delta / self.count as f64;
+        let delta2 = value_ms - self.mean_ms;
+        self.m2 += delta * delta2;
+    }
 
-        let avg = values.iter().sum::<f64>() / values.len() as f64;
-        let jitter = if values.len() > 1 {
-            values.iter().map(|v| (v - avg).abs()).sum::<f64>() / values.len() as f64
-        } else {
+    pub fn avg_ms(&self) -> f64 {
+        if self.count == 0 {
             0.0
-        };
+        } else {
+            self.mean_ms
+        }
+    }
 
-        Self {
-            avg_ms: avg,
-            jitter_ms: jitter,
+    pub fn jitter_ms(&self) -> f64 {
+        if self.count <= 1 {
+            0.0
+        } else {
+            (self.m2 / self.count as f64).sqrt()
         }
     }
 }

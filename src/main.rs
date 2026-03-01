@@ -5,7 +5,7 @@ mod app;
 mod source;
 mod tui;
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
     app::run().await
 }

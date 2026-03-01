@@ -34,17 +34,29 @@ pub struct TestResult {
     pub ul_max: f64,
     pub ping_idle: f64,
     pub jitter_idle: f64,
-    pub ping_loaded: f64,
-    pub jitter_loaded: f64,
+    pub ping_idle_total: usize,
+    pub ping_idle_failed: usize,
+
+    pub ping_dl: f64,
+    pub jitter_dl: f64,
+    pub ping_dl_total: usize,
+    pub ping_dl_failed: usize,
+
+    pub ping_ul: f64,
+    pub jitter_ul: f64,
+    pub ping_ul_total: usize,
+    pub ping_ul_failed: usize,
+
     pub dl_bytes: u64,
     pub ul_bytes: u64,
-    pub loaded_ping_samples: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TestPriority {
     DownloadFirst,
     UploadFirst,
+    DownloadOnly,
+    UploadOnly,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,10 +110,15 @@ pub enum ProgressEvent {
     LatencyUpdate {
         ping: f64,
         jitter: f64,
+        failed_count: usize,
+        total_count: usize,
     },
     NodeIpFound {
         node_id: String,
         node_ip: String,
+    },
+    TestAborted {
+        reason: String,
     },
     TestFinished(TestResult),
 }

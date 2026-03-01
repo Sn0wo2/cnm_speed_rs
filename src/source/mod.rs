@@ -46,6 +46,7 @@ pub fn default_source() -> Arc<dyn SpeedSource> {
 type SelectionSlot = Arc<Mutex<Option<SourceSelection>>>;
 type ActiveHandleSlot = Arc<Mutex<Option<ActiveTestHandle>>>;
 
+#[derive(Clone)]
 pub struct SourceRuntime {
     source: Arc<dyn SpeedSource>,
     selection_slot: SelectionSlot,
@@ -129,6 +130,11 @@ impl SourceRuntime {
                 )).await;
             });
         }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        let slot = self.selection_slot.lock().unwrap();
+        slot.is_some()
     }
 
     pub fn stop_test(&self) {
