@@ -18,8 +18,8 @@ pub fn settings_next_field(state: &mut AppState) {
         SettingsField::Smoothing => SettingsField::SpeedRefresh,
         SettingsField::SpeedRefresh => SettingsField::PingRefresh,
         SettingsField::PingRefresh => SettingsField::Priority,
-        SettingsField::Priority => SettingsField::AllowOfficialCheatCalc,
-        SettingsField::AllowOfficialCheatCalc => SettingsField::Concurrency,
+        SettingsField::Priority => SettingsField::AllowOfficialCheatCalculation,
+        SettingsField::AllowOfficialCheatCalculation => SettingsField::Concurrency,
     };
     sync_input_to_field(state);
 }
@@ -27,14 +27,15 @@ pub fn settings_next_field(state: &mut AppState) {
 pub fn settings_prev_field(state: &mut AppState) {
     settings_apply_input(state);
     state.settings_focus = match state.settings_focus {
-        SettingsField::Concurrency => SettingsField::AllowOfficialCheatCalc,
+        SettingsField::Concurrency => SettingsField::AllowOfficialCheatCalculation,
         SettingsField::Duration => SettingsField::Concurrency,
         SettingsField::Smoothing => SettingsField::Duration,
         SettingsField::SpeedRefresh => SettingsField::Smoothing,
         SettingsField::PingRefresh => SettingsField::SpeedRefresh,
         SettingsField::Priority => SettingsField::PingRefresh,
-        SettingsField::AllowOfficialCheatCalc => SettingsField::Priority,
+        SettingsField::AllowOfficialCheatCalculation => SettingsField::Priority,
     };
+
     sync_input_to_field(state);
 }
 
@@ -46,7 +47,7 @@ fn sync_input_to_field(state: &mut AppState) {
         SettingsField::SpeedRefresh => state.settings.speed_refresh_ms.to_string(),
         SettingsField::PingRefresh => state.settings.ping_refresh_ms.to_string(),
         SettingsField::Priority => String::new(),
-        SettingsField::AllowOfficialCheatCalc => String::new(),
+        SettingsField::AllowOfficialCheatCalculation => String::new(),
     };
     state.settings_input = tui_input::Input::new(val);
 }
@@ -87,8 +88,9 @@ pub fn settings_adjust(state: &mut AppState, delta: i32) {
                 TestPriority::DownloadFirst
             };
         }
-        SettingsField::AllowOfficialCheatCalc => {
-            state.settings.allow_official_cheat_calc = !state.settings.allow_official_cheat_calc;
+        SettingsField::AllowOfficialCheatCalculation => {
+            state.settings.allow_official_cheat_calculation =
+                !state.settings.allow_official_cheat_calculation;
         }
     }
 }
@@ -112,7 +114,7 @@ pub fn settings_handle_key(state: &mut AppState, key: KeyEvent) {
     // Block character input for toggle-only fields
     if matches!(
         state.settings_focus,
-        SettingsField::Priority | SettingsField::AllowOfficialCheatCalc
+        SettingsField::Priority | SettingsField::AllowOfficialCheatCalculation
     ) {
         if let KeyCode::Left | KeyCode::Right = key.code {
             settings_adjust(state, 1); // Toggle
@@ -174,7 +176,7 @@ pub fn settings_apply_input(state: &mut AppState) {
             }
         }
         SettingsField::Priority => {}
-        SettingsField::AllowOfficialCheatCalc => {}
+        SettingsField::AllowOfficialCheatCalculation => {}
     }
 }
 
@@ -210,6 +212,6 @@ fn settings_apply_input_live(state: &mut AppState) {
             }
         }
         SettingsField::Priority => {}
-        SettingsField::AllowOfficialCheatCalc => {}
+        SettingsField::AllowOfficialCheatCalculation => {}
     }
 }

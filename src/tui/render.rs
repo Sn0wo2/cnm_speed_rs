@@ -13,14 +13,14 @@ use std::collections::VecDeque;
 
 #[derive(Clone, Copy)]
 struct Theme {
-    accent: Color,    // Apple Blue
-    highlight: Color, // Pure White
-    text: Color,      // Light Gray
-    dim: Color,       // System Gray
-    border: Color,    // Separator Gray
-    success: Color,   // SF Green
-    error: Color,     // SF Red
-    bg_card: Color,   // Deep Gray
+    accent: Color,
+    highlight: Color,
+    text: Color,
+    dim: Color,
+    border: Color,
+    success: Color,
+    error: Color,
+    bg_card: Color,
 }
 
 impl Theme {
@@ -52,24 +52,8 @@ pub fn draw(f: &mut Frame, state: &std::sync::Arc<std::sync::Mutex<AppState>>) {
         ])
         .split(f.area());
 
-    // 1. HEADER
-    let base_url_clean = s.base_url.replace("http://", "");
-    let header_content = vec![
-        Span::styled(
-            " CNM SPEED ",
-            Style::default()
-                .fg(t.highlight)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("  {}  ", s.province_label),
-            Style::default().fg(t.accent),
-        ),
-        Span::styled(&base_url_clean, Style::default().fg(t.dim)),
-    ];
-    f.render_widget(Paragraph::new(Line::from(header_content)), root[0]);
+    render_header(f, &s, t, root[0]);
 
-    // 2. BODY
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
@@ -85,35 +69,91 @@ pub fn draw(f: &mut Frame, state: &std::sync::Arc<std::sync::Mutex<AppState>>) {
         ])
         .split(body[0]);
 
-    // --- Info Section ---
-    let ip_display = if s.ip.is_empty() || s.ip == "-" {
+    render_info(f, &s, t, left[0]);
+    render_performance(f, &s, t, left[1]);
+    render_actions(f, &mut s, t, left[2]);
+    render_summary(f, &s, t, left[3]);
+    render_nodes_table(f, &mut s, t, body[1]);
+
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            " ^C Full Copy  ·  ^S Summary  ·  ESC Settings  ·  S Start  ·  Q Quit",
+            Style::default().fg(t.dim),
+        )),
+        root[2],
+    );
+
+    if s.settings_open {
+        draw_settings_modal(f, &mut s, t);
+    }
+}
+
+fn render_header(f: &mut Frame, s: &AppState, t: Theme, area: Rect) {
+    let base_url_clean = s.base_url.trim_start_matches("http://");
+    let header_content = vec![
+        Span::styled(
+            " CNM SPEED ",
+            Style::default()
+                .fg(t.highlight)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  {}  ", s.province_label),
+            Style::default().fg(t.accent),
+        ),
+        Span::styled(base_url_clean, Style::default().fg(t.dim)),
+    ];
+    f.render_widget(Paragraph::new(Line::from(header_content)), area);
+}
+
+fn render_info(f: &mut Frame, s: &AppState, t: Theme, area: Rect) {
+    let ip_display = if s.user_context.ip.is_empty() || s.user_context.ip == "-" {
         "Detecting..."
     } else {
-        &s.ip
+        &s.user_context.ip
     };
     let info = vec![
         line_kv("Status", &s.status, t.accent),
-        line_kv("Account", &s.user, t.text),
+        line_kv("Account", &s.user_context.name, t.text),
         line_kv("Public IP", ip_display, t.text),
-        line_kv("Latency", &format!("{:.2} ms", s.ping), t.success),
-        line_kv("Jitter", &format!("{:.2} ms", s.jitter), t.success),
+        line_kv(
+            "Latency",
+            &format!("{:.2} ms", s.live_stats.ping),
+            t.success,
+        ),
+        line_kv(
+            "Jitter",
+            &format!("{:.2} ms", s.live_stats.jitter),
+            t.success,
+        ),
     ];
     f.render_widget(
         Paragraph::new(info).block(apple_block(" INFORMATION ", t)),
-        left[0],
+        area,
     );
+}
 
-    // --- Performance ---
+fn render_performance(f: &mut Frame, s: &AppState, t: Theme, area: Rect) {
     let (mode, speed, hist, ratio) = if s.running {
-        if s.dl_ratio > 0.0 && s.dl_ratio < 1.0 {
-            ("Downloading", s.dl_speed, &s.dl_hist, s.dl_ratio)
+        if s.live_stats.dl_ratio > 0.0 && s.live_stats.dl_ratio < 1.0 {
+            (
+                "Downloading",
+                s.live_stats.dl_speed,
+                &s.dl_hist,
+                s.live_stats.dl_ratio,
+            )
         } else {
-            ("Uploading", s.ul_speed, &s.ul_hist, s.ul_ratio)
+            (
+                "Uploading",
+                s.live_stats.ul_speed,
+                &s.ul_hist,
+                s.live_stats.ul_ratio,
+            )
         }
     } else if s.results.is_some() {
-        if let Some(ul) = s.ul_final {
+        if let Some(ul) = s.live_stats.ul_final {
             ("Uploading", ul, &s.ul_hist, 1.0)
-        } else if let Some(dl) = s.dl_final {
+        } else if let Some(dl) = s.live_stats.dl_final {
             ("Downloading", dl, &s.dl_hist, 1.0)
         } else {
             ("Finished", 0.0, &s.dl_hist, 1.0)
@@ -122,10 +162,11 @@ pub fn draw(f: &mut Frame, state: &std::sync::Arc<std::sync::Mutex<AppState>>) {
         ("Idle State", 0.0, &s.dl_hist, 0.0)
     };
 
-    let perf_inner = apple_block(" PERFORMANCE ", t).inner(left[1]);
-    f.render_widget(apple_block(" PERFORMANCE ", t), left[1]);
+    let block = apple_block(" PERFORMANCE ", t);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    let perf_rows = Layout::default()
+    let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
@@ -133,7 +174,7 @@ pub fn draw(f: &mut Frame, state: &std::sync::Arc<std::sync::Mutex<AppState>>) {
             Constraint::Length(1),
             Constraint::Min(0),
         ])
-        .split(perf_inner);
+        .split(inner);
 
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -148,10 +189,10 @@ pub fn draw(f: &mut Frame, state: &std::sync::Arc<std::sync::Mutex<AppState>>) {
                 Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
             ),
         ])),
-        perf_rows[0],
+        rows[0],
     );
 
-    let chart_width = 32;
+    let chart_width = inner.width.saturating_sub(8) as usize;
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("Speed   ", Style::default().fg(t.dim)),
@@ -160,7 +201,7 @@ pub fn draw(f: &mut Frame, state: &std::sync::Arc<std::sync::Mutex<AppState>>) {
                 Style::default().fg(t.accent),
             ),
         ])),
-        perf_rows[1],
+        rows[1],
     );
 
     f.render_widget(
@@ -171,37 +212,38 @@ pub fn draw(f: &mut Frame, state: &std::sync::Arc<std::sync::Mutex<AppState>>) {
                 Style::default().fg(t.accent),
             ),
         ])),
-        perf_rows[2],
+        rows[2],
     );
+}
 
-    // --- Action Buttons ---
-    let action_area = left[2];
-    let action_cols = Layout::default()
+fn render_actions(f: &mut Frame, s: &mut AppState, t: Theme, area: Rect) {
+    let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(action_area);
+        .split(area);
 
-    s.hits.start_btn = action_cols[0];
-    s.hits.quit_btn = action_cols[1];
+    s.hits.start_btn = cols[0];
+    s.hits.quit_btn = cols[1];
 
     render_apple_button(
         f,
         if s.running { "STOP" } else { "START" },
         if s.running { t.error } else { t.success },
-        action_cols[0],
+        cols[0],
     );
-    render_apple_button(f, "QUIT", t.dim, action_cols[1]);
+    render_apple_button(f, "QUIT", t.dim, cols[1]);
+}
 
-    // --- Summary ---
-    let summary_block = apple_block(" SUMMARY ", t);
-    let summary_inner = summary_block.inner(left[3]);
-    let available_height = summary_inner.height as usize;
+fn render_summary(f: &mut Frame, s: &AppState, t: Theme, area: Rect) {
+    let block = apple_block(" SUMMARY ", t);
+    let inner = block.inner(area);
+    let available_height = inner.height as usize;
 
-    let mut summary_lines = Vec::new();
-    let mut used_lines = 0;
+    let mut lines = Vec::new();
+    let mut used = 0;
 
     if let Some(r) = &s.results {
-        summary_lines.push(Line::from(vec![
+        lines.push(Line::from(vec![
             Span::styled(
                 " LAST RESULT ",
                 Style::default()
@@ -214,8 +256,8 @@ pub fn draw(f: &mut Frame, state: &std::sync::Arc<std::sync::Mutex<AppState>>) {
                 Style::default().fg(t.highlight),
             ),
         ]));
-        summary_lines.push(Line::from(""));
-        summary_lines.push(line_kv(
+        lines.push(Line::from(""));
+        lines.push(line_kv(
             "Data Used",
             &format!(
                 "DL {} / UL {}",
@@ -224,21 +266,22 @@ pub fn draw(f: &mut Frame, state: &std::sync::Arc<std::sync::Mutex<AppState>>) {
             ),
             t.dim,
         ));
-        used_lines += 3;
+        used += 3;
     }
 
-    let remaining = available_height.saturating_sub(used_lines);
+    let remaining = available_height.saturating_sub(used);
     for msg in s.timeline.iter().rev().take(remaining).rev() {
-        summary_lines.push(Line::from(vec![
+        lines.push(Line::from(vec![
             Span::styled(" • ", Style::default().fg(t.border)),
             Span::styled(msg, Style::default().fg(t.dim)),
         ]));
     }
-    f.render_widget(Paragraph::new(summary_lines).block(summary_block), left[3]);
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
 
-    // RIGHT PANEL (Nodes Table)
-    let nodes_block = apple_block(" SERVERS ", t);
-    s.hits.nodes_rect = body[1];
+fn render_nodes_table(f: &mut Frame, s: &mut AppState, t: Theme, area: Rect) {
+    let block = apple_block(" SERVERS ", t);
+    s.hits.nodes_rect = area;
     let rows: Vec<Row> = s
         .nodes
         .iter()
@@ -268,6 +311,7 @@ pub fn draw(f: &mut Frame, state: &std::sync::Arc<std::sync::Mutex<AppState>>) {
             .style(style)
         })
         .collect();
+
     let table = Table::new(
         rows,
         [
@@ -280,20 +324,8 @@ pub fn draw(f: &mut Frame, state: &std::sync::Arc<std::sync::Mutex<AppState>>) {
     .header(
         Row::new(vec!["", "Node Name", "IP Address", "Status"]).style(Style::default().fg(t.dim)),
     )
-    .block(nodes_block);
-    f.render_widget(table, body[1]);
-
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            " ^C Full Copy  ·  ^S Summary  ·  ESC Settings  ·  S Start  ·  Q Quit",
-            Style::default().fg(t.dim),
-        )),
-        root[2],
-    );
-
-    if s.settings_open {
-        draw_settings_modal(f, &mut s, t);
-    }
+    .block(block);
+    f.render_widget(table, area);
 }
 
 fn draw_settings_modal(f: &mut Frame, s: &mut AppState, t: Theme) {
@@ -318,7 +350,7 @@ fn draw_settings_modal(f: &mut Frame, s: &mut AppState, t: Theme) {
     } else {
         "Upload First"
     };
-    let allow_official_cheat_calc = if s.settings.allow_official_cheat_calc {
+    let allow_cheat = if s.settings.allow_official_cheat_calculation {
         "ON"
     } else {
         "OFF"
@@ -332,13 +364,13 @@ fn draw_settings_modal(f: &mut Frame, s: &mut AppState, t: Theme) {
         ("Ping Refresh", SettingsField::PingRefresh),
         ("Priority Mode", SettingsField::Priority),
         (
-            "allow official cheat calc",
-            SettingsField::AllowOfficialCheatCalc,
+            "Official Cheat Calculation",
+            SettingsField::AllowOfficialCheatCalculation,
         ),
     ];
 
     for (label, field) in fields {
-        let selected = s.settings_focus as u8 == field as u8;
+        let selected = s.settings_focus == field;
         let label_style = if selected {
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
         } else {
@@ -350,8 +382,7 @@ fn draw_settings_modal(f: &mut Frame, s: &mut AppState, t: Theme) {
             Color::Reset
         };
         let val_fg = if selected { t.highlight } else { t.text };
-        let display_val =
-            setting_display_value(s, field, selected, prio, allow_official_cheat_calc);
+        let display_val = setting_display_value(s, field, selected, prio, allow_cheat);
         rows.push(Line::from(vec![
             Span::styled(format!(" {:<16} ", label), label_style),
             Span::styled(
@@ -391,7 +422,6 @@ fn render_apple_button(f: &mut Frame, text: &str, color: Color, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Perfect vertical centering using nested layout within the inner area
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -431,24 +461,14 @@ fn mini_chart_rtl(hist: &VecDeque<f64>, width: usize, ratio: f64) -> String {
         return "░".repeat(width);
     }
     let chars = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-
-    // Min-Max Local Scaling
     let max_v = hist.iter().cloned().fold(0.1, f64::max);
     let min_v = hist.iter().cloned().fold(max_v, f64::min);
     let range = (max_v - min_v).max(0.1);
 
-    // Floor calculation to avoid overflow (max 32)
-    let ratio = ratio.clamp(0.0, 1.0);
-    let active_slots = (width as f64 * ratio).floor() as usize;
-    let active_slots = if active_slots == 0 && !hist.is_empty() {
-        1
-    } else {
-        active_slots
-    }
-    .min(width);
+    let active_slots = (width as f64 * ratio.clamp(0.0, 1.0)).floor() as usize;
+    let active_slots = active_slots.max(1).min(width);
     let empty_slots = width.saturating_sub(active_slots);
 
-    // Resample
     let mut data = Vec::with_capacity(active_slots);
     if hist.len() >= active_slots {
         for &v in hist.iter().rev().take(active_slots).rev() {
@@ -461,12 +481,6 @@ fn mini_chart_rtl(hist: &VecDeque<f64>, width: usize, ratio: f64) -> String {
             let v = hist[hist_idx.min(hist.len() - 1)];
             let norm = ((v - min_v) / range).powf(0.5);
             data.push(chars[(norm * 7.0).round() as usize]);
-        }
-    }
-
-    for item in data.iter_mut() {
-        if *item == " " {
-            *item = "▂";
         }
     }
 
@@ -499,7 +513,7 @@ fn setting_display_value(
     field: SettingsField,
     selected: bool,
     prio: &str,
-    allow_official_cheat_calc: &str,
+    allow_cheat: &str,
 ) -> String {
     match field {
         SettingsField::Concurrency => {
@@ -542,6 +556,6 @@ fn setting_display_value(
             format!("{}ms", raw)
         }
         SettingsField::Priority => prio.to_string(),
-        SettingsField::AllowOfficialCheatCalc => allow_official_cheat_calc.to_string(),
+        SettingsField::AllowOfficialCheatCalculation => allow_cheat.to_string(),
     }
 }

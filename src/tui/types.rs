@@ -37,16 +37,19 @@ pub enum SettingsField {
     SpeedRefresh,
     PingRefresh,
     Priority,
-    AllowOfficialCheatCalc,
+    AllowOfficialCheatCalculation,
 }
 
-pub struct AppState {
-    pub status: String,
-    pub user: String,
+#[derive(Default)]
+pub struct UserContext {
+    pub name: String,
     pub ip: String,
     pub city: String,
-    pub bw: String,
-    pub node: String,
+    pub bandwidth: String,
+}
+
+#[derive(Default)]
+pub struct LiveStats {
     pub ping: f64,
     pub jitter: f64,
     pub dl_speed: f64,
@@ -55,17 +58,28 @@ pub struct AppState {
     pub ul_ratio: f32,
     pub dl_final: Option<f64>,
     pub ul_final: Option<f64>,
+}
+
+pub struct AppState {
+    pub status: String,
+    pub user_context: UserContext,
+    pub live_stats: LiveStats,
+
+    pub node: String,
     pub nodes: Vec<NodeInfo>,
     pub results: Option<TestResult>,
     pub running: bool,
     pub selected_idx: usize,
+
     pub base_url: String,
     pub province_label: String,
     pub started_at: Option<Instant>,
+
     pub dl_hist: VecDeque<f64>,
     pub ul_hist: VecDeque<f64>,
     pub hits: HitBoxes,
     pub timeline: VecDeque<String>,
+
     pub settings: RuntimeConfig,
     pub settings_open: bool,
     pub settings_focus: SettingsField,
@@ -76,19 +90,9 @@ impl AppState {
     pub fn new(base_url: String, province_label: String) -> Self {
         Self {
             status: "Ready".into(),
-            user: "-".into(),
-            ip: "-".into(),
-            city: "-".into(),
-            bw: "-".into(),
+            user_context: UserContext::default(),
+            live_stats: LiveStats::default(),
             node: "-".into(),
-            ping: 0.0,
-            jitter: 0.0,
-            dl_speed: 0.0,
-            dl_ratio: 0.0,
-            ul_speed: 0.0,
-            ul_ratio: 0.0,
-            dl_final: None,
-            ul_final: None,
             nodes: vec![],
             results: None,
             running: false,
@@ -96,10 +100,10 @@ impl AppState {
             base_url,
             province_label,
             started_at: None,
-            dl_hist: VecDeque::with_capacity(64),
-            ul_hist: VecDeque::with_capacity(64),
+            dl_hist: VecDeque::with_capacity(101),
+            ul_hist: VecDeque::with_capacity(101),
             hits: HitBoxes::empty(),
-            timeline: VecDeque::with_capacity(64),
+            timeline: VecDeque::with_capacity(32),
             settings: RuntimeConfig::default(),
             settings_open: false,
             settings_focus: SettingsField::Concurrency,

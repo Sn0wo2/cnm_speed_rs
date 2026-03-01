@@ -8,7 +8,7 @@ pub fn apply_event(state: &mut AppState, ev: ProgressEvent) {
     match ev {
         ProgressEvent::Status(st) => {
             state.status = st.clone();
-            push_line(&mut state.timeline, st);
+            push_timeline(&mut state.timeline, st);
         }
         ProgressEvent::ServerSelected {
             base_url,
@@ -17,64 +17,61 @@ pub fn apply_event(state: &mut AppState, ev: ProgressEvent) {
             state.base_url = base_url.clone();
             state.province_label = province_label.clone();
             state.status = format!("Server ready: {}", province_label);
-            push_line(
+            push_timeline(
                 &mut state.timeline,
                 format!("Selected server: {} ({})", province_label, base_url),
             );
         }
-        ProgressEvent::Info { user, ip, city, bw } => {
-            state.user = user;
-            state.ip = ip;
-            state.city = city;
-            state.bw = bw;
+        ProgressEvent::UserInfo { user, ip, city, bw } => {
+            state.user_context.name = user;
+            state.user_context.ip = ip;
+            state.user_context.city = city;
+            state.user_context.bandwidth = bw;
         }
-        ProgressEvent::Nodes(n) => {
-            state.nodes = n;
+        ProgressEvent::NodesUpdate(nodes) => {
+            state.nodes = nodes;
             if !state.nodes.is_empty() {
                 state.selected_idx = state.selected_idx.min(state.nodes.len() - 1);
                 state.node = state.nodes[state.selected_idx].name.clone();
             }
         }
-        ProgressEvent::DownloadProgress { ratio, speed } => {
-            let r = if ratio.is_finite() { ratio } else { 0.0 };
-            state.dl_ratio = r.clamp(0.0, 1.0);
-            state.dl_speed = speed.max(0.0);
-            push_hist(&mut state.dl_hist, state.dl_speed);
-            if state.dl_ratio >= 1.0 {
-                state.dl_final = Some(state.dl_speed);
+        ProgressEvent::DownloadUpdate { ratio, speed } => {
+            state.live_stats.dl_ratio = ratio.clamp(0.0, 1.0);
+            state.live_stats.dl_speed = speed.max(0.0);
+            push_history(&mut state.dl_hist, state.live_stats.dl_speed);
+            if state.live_stats.dl_ratio >= 1.0 {
+                state.live_stats.dl_final = Some(state.live_stats.dl_speed);
             }
         }
-        ProgressEvent::UploadProgress { ratio, speed } => {
-            let r = if ratio.is_finite() { ratio } else { 0.0 };
-            state.ul_ratio = r.clamp(0.0, 1.0);
-            state.ul_speed = speed.max(0.0);
-            push_hist(&mut state.ul_hist, state.ul_speed);
-            if state.ul_ratio >= 1.0 {
-                state.ul_final = Some(state.ul_speed);
+        ProgressEvent::UploadUpdate { ratio, speed } => {
+            state.live_stats.ul_ratio = ratio.clamp(0.0, 1.0);
+            state.live_stats.ul_speed = speed.max(0.0);
+            push_history(&mut state.ul_hist, state.live_stats.ul_speed);
+            if state.live_stats.ul_ratio >= 1.0 {
+                state.live_stats.ul_final = Some(state.live_stats.ul_speed);
             }
         }
-        ProgressEvent::PingUpdate { ping, jitter } => {
-            state.ping = ping.max(0.0);
-            state.jitter = jitter.max(0.0);
+        ProgressEvent::LatencyUpdate { ping, jitter } => {
+            state.live_stats.ping = ping.max(0.0);
+            state.live_stats.jitter = jitter.max(0.0);
         }
-        ProgressEvent::NodeIpUpdate { node_id, node_ip } => {
+        ProgressEvent::NodeIpFound { node_id, node_ip } => {
             if let Some(node) = state.nodes.iter_mut().find(|n| n.node_id == node_id) {
                 node.node_ip = node_ip.clone();
             }
-            // Update active node string if currently selected
             if let Some(active) = state.nodes.get(state.selected_idx) {
                 if active.node_id == node_id {
                     state.node = active.name.clone();
                 }
             }
         }
-        ProgressEvent::Finished(res) => {
-            state.dl_final = Some(res.dl_avg);
-            state.ul_final = Some(res.ul_avg);
+        ProgressEvent::TestFinished(res) => {
+            state.live_stats.dl_final = Some(res.dl_avg);
+            state.live_stats.ul_final = Some(res.ul_avg);
             state.results = Some(res);
             state.running = false;
             state.status = "Done".into();
-            push_line(&mut state.timeline, "Done".into());
+            push_timeline(&mut state.timeline, "Test complete".into());
             state.started_at = None;
         }
     }
@@ -83,17 +80,15 @@ pub fn apply_event(state: &mut AppState, ev: ProgressEvent) {
 pub fn select_prev_node(state: &mut AppState) {
     if state.selected_idx > 0 {
         state.selected_idx -= 1;
-    }
-    if !state.nodes.is_empty() {
-        state.node = state.nodes[state.selected_idx].name.clone();
+        if let Some(node) = state.nodes.get(state.selected_idx) {
+            state.node = node.name.clone();
+        }
     }
 }
 
 pub fn select_next_node(state: &mut AppState) {
     if !state.nodes.is_empty() && state.selected_idx + 1 < state.nodes.len() {
         state.selected_idx += 1;
-    }
-    if !state.nodes.is_empty() {
         state.node = state.nodes[state.selected_idx].name.clone();
     }
 }
@@ -104,21 +99,20 @@ pub fn start_test(state: &mut AppState) -> Option<Option<String>> {
     }
     state.running = true;
     state.results = None;
-    state.dl_final = None;
-    state.ul_final = None;
-    state.dl_speed = 0.0;
-    state.ul_speed = 0.0;
-    state.dl_ratio = 0.0;
-    state.ul_ratio = 0.0;
+    state.live_stats.dl_final = None;
+    state.live_stats.ul_final = None;
+    state.live_stats.dl_speed = 0.0;
+    state.live_stats.ul_speed = 0.0;
+    state.live_stats.dl_ratio = 0.0;
+    state.live_stats.ul_ratio = 0.0;
     state.dl_hist.clear();
     state.ul_hist.clear();
     state.started_at = Some(Instant::now());
 
-    let selected_node_id = if !state.nodes.is_empty() {
-        Some(state.nodes[state.selected_idx].node_id.clone())
-    } else {
-        None
-    };
+    let selected_node_id = state
+        .nodes
+        .get(state.selected_idx)
+        .map(|n| n.node_id.clone());
     Some(selected_node_id)
 }
 
@@ -126,7 +120,7 @@ pub fn stop_test(state: &mut AppState) {
     state.running = false;
     state.started_at = None;
     state.status = "Stopped".into();
-    push_line(&mut state.timeline, "Stopped by user".into());
+    push_timeline(&mut state.timeline, "Stopped by user".into());
 }
 
 pub fn copy_results_to_clipboard(state: &mut AppState) {
@@ -138,12 +132,15 @@ pub fn copy_results_to_clipboard(state: &mut AppState) {
     ));
     text.push_str(&format!(
         "User    : {}, IP: {}, City: {}\n",
-        state.user, state.ip, state.city
+        state.user_context.name, state.user_context.ip, state.user_context.city
     ));
-    text.push_str(&format!("Contract: {}, Node: {}\n", state.bw, state.node));
+    text.push_str(&format!(
+        "Contract: {}, Node: {}\n",
+        state.user_context.bandwidth, state.node
+    ));
     text.push_str(&format!(
         "Latency : {:.2}ms, Jitter: {:.2}ms\n",
-        state.ping, state.jitter
+        state.live_stats.ping, state.live_stats.jitter
     ));
 
     text.push_str("\n[Settings]\n");
@@ -185,7 +182,7 @@ pub fn copy_summary_to_clipboard(state: &mut AppState) {
     if let Some(r) = &state.results {
         text.push_str(&format!(
             "LAST RESULT: DL {:.2} / UL {:.2} Mbps / Ping {:.2}ms\n",
-            r.dl_avg, r.ul_avg, state.ping
+            r.dl_avg, r.ul_avg, state.live_stats.ping
         ));
         text.push_str(&format!(
             "Data Used: DL {} / UL {}\n",
@@ -212,7 +209,7 @@ fn copy_to_system_clipboard_impl(state: &mut AppState, text: String, success_msg
     let mut clipboard = match arboard::Clipboard::new() {
         Ok(c) => c,
         Err(_) => {
-            push_line(
+            push_timeline(
                 &mut state.timeline,
                 "Error: Could not access clipboard".into(),
             );
@@ -221,30 +218,29 @@ fn copy_to_system_clipboard_impl(state: &mut AppState, text: String, success_msg
     };
 
     match clipboard.set_text(text) {
-        Ok(_) => push_line(&mut state.timeline, success_msg.into()),
-        Err(_) => push_line(&mut state.timeline, "✗ Failed to copy to clipboard".into()),
+        Ok(_) => push_timeline(&mut state.timeline, success_msg.into()),
+        Err(_) => push_timeline(&mut state.timeline, "✗ Failed to copy to clipboard".into()),
     }
 }
 
 #[cfg(target_os = "android")]
 fn copy_to_system_clipboard_impl(state: &mut AppState, _text: String, _success_msg: &str) {
-    push_line(
+    push_timeline(
         &mut state.timeline,
         "Clipboard is unavailable on Android target".into(),
     );
 }
 
-pub fn push_line(lines: &mut VecDeque<String>, s: String) {
+pub fn push_timeline(lines: &mut VecDeque<String>, s: String) {
     if lines.len() >= 100 {
-        let _ = lines.pop_front();
+        lines.pop_front();
     }
     lines.push_back(s);
 }
 
-fn push_hist(hist: &mut VecDeque<f64>, v: f64) {
+fn push_history(hist: &mut VecDeque<f64>, v: f64) {
     if hist.len() >= 100 {
-        // Allow for longer window tracking
-        let _ = hist.pop_front();
+        hist.pop_front();
     }
     hist.push_back(v);
 }
