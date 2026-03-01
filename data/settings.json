@@ -1,0 +1,9 @@
+{
+  "duration_sec": 10,
+  "concurrency": 8,
+  "smoothing_window_sec": 2.5,
+  "speed_refresh_ms": 250,
+  "ping_refresh_ms": 500,
+  "priority": "DownloadFirst",
+  "allow_official_cheat_calculation": false
+}
