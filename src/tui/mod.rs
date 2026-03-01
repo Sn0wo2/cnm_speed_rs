@@ -1,3 +1,4 @@
+pub mod components;
 mod io;
 mod mouse;
 mod render;
@@ -9,8 +10,8 @@ pub use io::{backend, terminal};
 pub use mouse::handle_click;
 pub use render::draw;
 pub use settings::{
-    settings_apply_input, settings_handle_key, settings_next_field, settings_prev_field,
-    settings_sync_input, settings_toggle,
+    settings_adjust, settings_apply_input, settings_handle_key, settings_next_field,
+    settings_prev_field, settings_sync_input, settings_toggle,
 };
 pub use state::{
     apply_event, copy_results_to_clipboard, copy_summary_to_clipboard, push_timeline,

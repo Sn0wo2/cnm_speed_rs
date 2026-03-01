@@ -84,15 +84,16 @@ pub fn settings_adjust(state: &mut AppState, delta: i32) {
         SettingsField::PingRefresh => {
             state.settings.ping_refresh_ms = (state.settings.ping_refresh_ms as i32
                 + if delta > 0 { 20 } else { -20 })
-            .clamp(50, 2000) as u64;
+            .clamp(20, 2000) as u64;
             state.settings_dirty = true;
             settings_sync_input(state);
         }
         SettingsField::Priority => {
-            state.settings.priority = if state.settings.priority == TestPriority::DownloadFirst {
-                TestPriority::UploadFirst
-            } else {
-                TestPriority::DownloadFirst
+            state.settings.priority = match state.settings.priority {
+                TestPriority::DownloadFirst => TestPriority::UploadFirst,
+                TestPriority::UploadFirst => TestPriority::DownloadOnly,
+                TestPriority::DownloadOnly => TestPriority::UploadOnly,
+                TestPriority::UploadOnly => TestPriority::DownloadFirst,
             };
             state.settings_dirty = true;
         }
@@ -120,26 +121,18 @@ pub fn settings_handle_key(state: &mut AppState, key: KeyEvent) {
         }
     }
 
-    if matches!(
-        state.settings_focus,
-        SettingsField::Priority
-            | SettingsField::AllowOfficialCheatCalculation
-            | SettingsField::Reload
-    ) {
-        if let KeyCode::Left | KeyCode::Right = key.code {
-            settings_adjust(state, 1);
-        }
+    if let KeyCode::Left = key.code {
+        settings_adjust(state, -1);
+        return;
+    }
+    if let KeyCode::Right = key.code {
+        settings_adjust(state, 1);
         return;
     }
 
     let is_nav = matches!(
         key.code,
-        KeyCode::Left
-            | KeyCode::Right
-            | KeyCode::Home
-            | KeyCode::End
-            | KeyCode::Backspace
-            | KeyCode::Delete
+        KeyCode::Home | KeyCode::End | KeyCode::Backspace | KeyCode::Delete
     );
     let is_char = match key.code {
         KeyCode::Char(c) => c.is_ascii_digit() || c == '.',
@@ -161,32 +154,32 @@ pub fn settings_apply_input(state: &mut AppState) {
     }
     match state.settings_focus {
         SettingsField::Concurrency => {
-            if let Ok(v) = val.parse() {
-                state.settings.concurrency = v;
+            if let Ok(v) = val.parse::<usize>() {
+                state.settings.concurrency = v.clamp(1, 64);
                 state.settings_dirty = true;
             }
         }
         SettingsField::Duration => {
-            if let Ok(v) = val.parse() {
-                state.settings.duration_sec = v;
+            if let Ok(v) = val.parse::<u64>() {
+                state.settings.duration_sec = v.clamp(3, 120);
                 state.settings_dirty = true;
             }
         }
         SettingsField::Smoothing => {
-            if let Ok(v) = val.parse() {
-                state.settings.smoothing_window_sec = v;
+            if let Ok(v) = val.parse::<f64>() {
+                state.settings.smoothing_window_sec = v.clamp(0.2, 5.0);
                 state.settings_dirty = true;
             }
         }
         SettingsField::SpeedRefresh => {
-            if let Ok(v) = val.parse() {
-                state.settings.speed_refresh_ms = v;
+            if let Ok(v) = val.parse::<u64>() {
+                state.settings.speed_refresh_ms = v.clamp(50, 1000);
                 state.settings_dirty = true;
             }
         }
         SettingsField::PingRefresh => {
-            if let Ok(v) = val.parse() {
-                state.settings.ping_refresh_ms = v;
+            if let Ok(v) = val.parse::<u64>() {
+                state.settings.ping_refresh_ms = v.clamp(20, 2000);
                 state.settings_dirty = true;
             }
         }
@@ -226,7 +219,7 @@ fn settings_apply_input_live(state: &mut AppState) {
         }
         SettingsField::PingRefresh => {
             if let Ok(v) = val.parse::<u64>() {
-                state.settings.ping_refresh_ms = v.clamp(50, 2000);
+                state.settings.ping_refresh_ms = v.clamp(20, 2000);
                 state.settings_dirty = true;
             }
         }
