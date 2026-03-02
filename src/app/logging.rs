@@ -5,12 +5,12 @@ use std::io::{self, BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 use tracing_appender::non_blocking::WorkerGuard;
+use tracing_log::LogTracer;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-const LOG_DIR: &str = "./data/logs";
+const LOG_DIR: &str = "data/logs";
 const LATEST_LOG: &str = "latest.log";
 const LOG_EXT: &str = "log";
 const LOG_GZ_EXT: &str = "log.gz";
@@ -61,8 +61,7 @@ impl LoggerManager {
         Self::create_latest_symlink(log_dir, &current_log_path)
             .context("creating latest.log symlink")?;
 
-        let env_filter =
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        let _ = LogTracer::init();
 
         let file_layer = fmt::Layer::new()
             .with_writer(file_writer)
@@ -83,7 +82,6 @@ impl LoggerManager {
             );
 
         tracing_subscriber::registry()
-            .with(env_filter)
             .with(file_layer)
             .try_init()
             .context("initializing tracing subscriber")?;
@@ -99,9 +97,13 @@ impl LoggerManager {
 
         tracing::info!(
             "Logger initialized at {}",
-            manager.current_log_path.display()
+            Self::normalize_path_for_log(&manager.current_log_path)
         );
         Ok(manager)
+    }
+
+    fn normalize_path_for_log(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
     }
 
     fn rotate_latest_log(log_dir: &Path) -> Result<()> {
@@ -214,6 +216,5 @@ impl LoggerManager {
                 .with_context(|| format!("removing old plain log {}", path.display()))?;
         }
         Ok(())
-
     }
 }

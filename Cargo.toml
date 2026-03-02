@@ -20,6 +20,7 @@ tui-input = "0.15.0"
 throbber-widgets-tui = "0.11.0"
 anyhow = "1.0"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
 time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
