@@ -1,7 +1,7 @@
 use crate::source::cmcc_types::{ApiResponse, BeginTestData};
 use crate::speedtest::api::{BeginTestRequest, DefaultNodeRequest, SpeedtestApi};
 use crate::speedtest::types::{
-    ActiveTestHandle, ProgressEvent, RuntimeConfig, TestPriority, TestResult, NodeInfo,
+    ActiveTestHandle, NodeInfo, ProgressEvent, RuntimeConfig, TestPriority, TestResult,
 };
 use crate::utils::crypto::CMCCCrypto;
 use crate::utils::stats::{OnlineDelayStats, RollingRateWindow, SampleStats};
@@ -154,7 +154,7 @@ impl SpeedTester {
             .timeout(Duration::from_millis(LOAD_PING_TIMEOUT_MS + 200))
             .build()
             .unwrap_or_default();
-        
+
         Self {
             client,
             ping_client,
@@ -231,9 +231,9 @@ impl SpeedTester {
         }
 
         self.emit_status(&tx, "Testing...").await;
-        
+
         let target_node_id = if node_id_override.is_some() { node_id_override.as_deref() } else { Some(selected_node.node_id.as_str()) };
-        
+
         let (d_task_id, d_node_ip, adjuster) = self.begin_download_task(&api, &context, target_node_id, &tx).await;
         if d_task_id.is_empty() {
             self.emit_status(&tx, "Task Error").await;
@@ -278,15 +278,26 @@ impl SpeedTester {
         }
 
         let _ = tx.send(ProgressEvent::TestFinished(TestResult {
-            dl_avg: dl_res.avg_mbps, dl_raw_avg: dl_res.raw_avg_mbps, dl_max: dl_res.max_mbps,
-            ul_avg: ul_res.avg_mbps, ul_raw_avg: ul_res.raw_avg_mbps, ul_max: ul_res.max_mbps,
-            ping_idle: idle_ping.avg_ms, jitter_idle: idle_ping.jitter_ms,
-            ping_idle_total: idle_ping.total_count, ping_idle_failed: idle_ping.failed_count,
-            ping_dl: dl_res.ping, jitter_dl: dl_res.jitter,
-            ping_dl_total: dl_res.total_count, ping_dl_failed: dl_res.failed_count,
-            ping_ul: ul_res.ping, jitter_ul: ul_res.jitter,
-            ping_ul_total: ul_res.total_count, ping_ul_failed: ul_res.failed_count,
-            dl_bytes: dl_res.bytes, ul_bytes: ul_res.bytes,
+            dl_avg: dl_res.avg_mbps,
+            dl_raw_avg: dl_res.raw_avg_mbps,
+            dl_max: dl_res.max_mbps,
+            ul_avg: ul_res.avg_mbps,
+            ul_raw_avg: ul_res.raw_avg_mbps,
+            ul_max: ul_res.max_mbps,
+            ping_idle: idle_ping.avg_ms,
+            jitter_idle: idle_ping.jitter_ms,
+            ping_idle_total: idle_ping.total_count,
+            ping_idle_failed: idle_ping.failed_count,
+            ping_dl: dl_res.ping,
+            jitter_dl: dl_res.jitter,
+            ping_dl_total: dl_res.total_count,
+            ping_dl_failed: dl_res.failed_count,
+            ping_ul: ul_res.ping,
+            jitter_ul: ul_res.jitter,
+            ping_ul_total: ul_res.total_count,
+            ping_ul_failed: ul_res.failed_count,
+            dl_bytes: dl_res.bytes,
+            ul_bytes: ul_res.bytes,
         })).await;
     }
 
@@ -381,7 +392,7 @@ impl SpeedTester {
                 node_ip, self.node_port, self.endpoints.node_ping_path
             ),
         )
-        .await;
+            .await;
 
         let idle_ping = self
             .measure_ping(node_ip, self.node_port, if is_init { 2 } else { 5 })
@@ -437,8 +448,13 @@ impl SpeedTester {
         }
 
         let node = api.get_default_node(&DefaultNodeRequest {
-            ip: &ctx.user_ip, city: &ctx.city, account: &ctx.account,
-            down_bw: ctx.dbw, up_bw: ctx.ubw, operator: &ctx.isp, province: &ctx.province,
+            ip: &ctx.user_ip,
+            city: &ctx.city,
+            account: &ctx.account,
+            down_bw: ctx.dbw,
+            up_bw: ctx.ubw,
+            operator: &ctx.isp,
+            province: &ctx.province,
         }).await;
 
         if let Some(ref n) = node {
@@ -457,7 +473,7 @@ impl SpeedTester {
         let result = self.run_workers(
             is_dl, ip, self.node_port, task_id, cfg.duration_sec, cfg.concurrency,
             cfg.smoothing_window_sec, cfg.speed_refresh_ms, cfg.ping_refresh_ms,
-            adjuster, cfg.allow_official_cheat_calculation, tx, stop
+            adjuster, cfg.allow_official_cheat_calculation, tx, stop,
         ).await;
         PhaseResult {
             avg_mbps: result.avg_mbps,
@@ -514,7 +530,7 @@ impl SpeedTester {
         let mut delays = Vec::new();
         let mut failed = 0;
         let url = format!("http://{}:{}{}", ip, port, self.endpoints.node_ping_path);
-        
+
         // Warm-up request to establish TCP/HTTP connection and DNS caching
         let _ = self
             .ping_client
@@ -525,7 +541,7 @@ impl SpeedTester {
             .timeout(Duration::from_millis(IDLE_PING_TIMEOUT_MS))
             .send()
             .await;
-        
+
         for _ in 0..count {
             let start = Instant::now();
             let req = self
@@ -536,8 +552,8 @@ impl SpeedTester {
                 .header("Connection", "keep-alive")
                 .timeout(Duration::from_millis(IDLE_PING_TIMEOUT_MS));
             if let Ok(resp) = req.send().await {
-                if resp.status() == 200 { 
-                    delays.push(start.elapsed().as_secs_f64() * 1000.0); 
+                if resp.status() == 200 {
+                    delays.push(start.elapsed().as_secs_f64() * 1000.0);
                 } else {
                     failed += 1;
                 }
@@ -567,7 +583,7 @@ impl SpeedTester {
     async fn run_workers(
         &self, is_dl: bool, node_ip: &str, port: u16, task_id: &str, duration_sec: u64, concurrency: usize,
         smoothing_window_sec: f64, speed_refresh_ms: u64, ping_refresh_ms: u64,
-        speed_adjuster: SpeedAdjuster, allow_cheat: bool, tx: mpsc::Sender<ProgressEvent>, stop: Arc<AtomicBool>
+        speed_adjuster: SpeedAdjuster, allow_cheat: bool, tx: mpsc::Sender<ProgressEvent>, stop: Arc<AtomicBool>,
     ) -> WorkerRunResult {
         let total_bytes = Arc::new(AtomicU64::new(0));
         let start_time = Instant::now();
@@ -627,7 +643,7 @@ impl SpeedTester {
                 .timeout(Duration::from_millis(LOAD_PING_TIMEOUT_MS))
                 .send()
                 .await;
-            
+
             while Instant::now() < end_time {
                 if c_p.load(Ordering::Relaxed) || s_p.load(Ordering::Relaxed) { break; }
                 let start = Instant::now();
@@ -648,8 +664,8 @@ impl SpeedTester {
                             lock.push(d);
                             lock.jitter_ms()
                         };
-                        let _ = tx_p.send(ProgressEvent::LatencyUpdate { 
-                            ping: d, 
+                        let _ = tx_p.send(ProgressEvent::LatencyUpdate {
+                            ping: d,
                             jitter,
                             failed_count: lf.load(Ordering::Relaxed),
                             total_count: lt.load(Ordering::Relaxed),
@@ -678,16 +694,17 @@ impl SpeedTester {
                 let raw_mbps = rolling.bits_per_sec() / 1_000_000.0;
                 let display_mbps = if allow_cheat { if is_dl { speed_adjuster.adjust_download_mbps(raw_mbps) } else { speed_adjuster.adjust_upload_mbps(raw_mbps) } } else { raw_mbps };
                 samples.push((now.duration_since(start_time).as_secs_f64(), display_mbps * 1_000_000.0));
-                
+
                 let ratio = (now.duration_since(start_time).as_secs_f64() / duration_sec as f64) as f32;
-                
-                let _ = tx.send(if is_dl { 
-                    ProgressEvent::DownloadUpdate { ratio, speed: display_mbps, raw_speed: raw_mbps } 
-                } else { 
-                    ProgressEvent::UploadUpdate { ratio, speed: display_mbps, raw_speed: raw_mbps } 
+
+                let _ = tx.send(if is_dl {
+                    ProgressEvent::DownloadUpdate { ratio, speed: display_mbps, raw_speed: raw_mbps }
+                } else {
+                    ProgressEvent::UploadUpdate { ratio, speed: display_mbps, raw_speed: raw_mbps }
                 }).await;
-                
-                lb = cb; lt = now;
+
+                lb = cb;
+                lt = now;
             }
         }
 
@@ -697,7 +714,7 @@ impl SpeedTester {
 
         let failed_count = loaded_failed.load(Ordering::Relaxed);
         let total_count = loaded_total.load(Ordering::Relaxed);
-        if samples.is_empty() { 
+        if samples.is_empty() {
             return WorkerRunResult::empty(
                 total_bytes.load(Ordering::Relaxed),
                 failed_count,
@@ -759,17 +776,37 @@ impl SpeedTester {
 
     async fn begin_upload_task(&self, api: &SpeedtestApi<'_>, context: &DiscoveryContext, node_id: &str, down_task_id: &str) -> String {
         api.begin_test(&BeginTestRequest {
-            dbw: context.dbw, ubw: context.ubw, city: &context.city, user_ip: &context.user_ip, province: &context.province,
-            operator: &context.isp, mode: "Up", node_id, bd_account: &context.account,
-            is_sign_account: "", is_use_plug: 0, network_type: "", task_id: Some(down_task_id),
+            dbw: context.dbw,
+            ubw: context.ubw,
+            city: &context.city,
+            user_ip: &context.user_ip,
+            province: &context.province,
+            operator: &context.isp,
+            mode: "Up",
+            node_id,
+            bd_account: &context.account,
+            is_sign_account: "",
+            is_use_plug: 0,
+            network_type: "",
+            task_id: Some(down_task_id),
         }).await.map(|d| d.task_id).unwrap_or_else(|| down_task_id.to_string())
     }
 
     async fn prefetch_node_ip_for(&self, api: &SpeedtestApi<'_>, context: &DiscoveryContext, node_id: &str) -> Option<String> {
         api.begin_test(&BeginTestRequest {
-            dbw: context.dbw, ubw: context.ubw, city: &context.city, user_ip: &context.user_ip, province: &context.province,
-            operator: &context.isp, mode: "Down", node_id, bd_account: &context.account,
-            is_sign_account: "", is_use_plug: 0, network_type: "", task_id: None,
+            dbw: context.dbw,
+            ubw: context.ubw,
+            city: &context.city,
+            user_ip: &context.user_ip,
+            province: &context.province,
+            operator: &context.isp,
+            mode: "Down",
+            node_id,
+            bd_account: &context.account,
+            is_sign_account: "",
+            is_use_plug: 0,
+            network_type: "",
+            task_id: None,
         }).await.and_then(|d| if d.node_ip.is_empty() { None } else { Some(d.node_ip) })
     }
 
@@ -786,14 +823,20 @@ impl SpeedTester {
 }
 
 #[derive(Clone, Copy)]
-struct SpeedAdjuster { is_ten_gig: bool }
+struct SpeedAdjuster {
+    is_ten_gig: bool,
+}
 impl SpeedAdjuster {
-    fn from_begin_data(data: &BeginTestData) -> Self { Self { is_ten_gig: match &data.is_ten_thousand {
-        serde_json::Value::Bool(v) => *v,
-        serde_json::Value::Number(v) => v.as_i64() == Some(1),
-        serde_json::Value::String(v) => v.trim() == "1" || v.eq_ignore_ascii_case("true"),
-        _ => false
-    }}}
+    fn from_begin_data(data: &BeginTestData) -> Self {
+        Self {
+            is_ten_gig: match &data.is_ten_thousand {
+                serde_json::Value::Bool(v) => *v,
+                serde_json::Value::Number(v) => v.as_i64() == Some(1),
+                serde_json::Value::String(v) => v.trim() == "1" || v.eq_ignore_ascii_case("true"),
+                _ => false
+            }
+        }
+    }
     fn adjust_download_mbps(&self, raw: f64) -> f64 { self.adjust(raw, 1.14) }
     fn adjust_upload_mbps(&self, raw: f64) -> f64 { self.adjust(raw, 1.09) }
     fn adjust(&self, raw: f64, mult: f64) -> f64 {

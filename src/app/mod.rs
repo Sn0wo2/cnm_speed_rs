@@ -31,19 +31,29 @@ impl AppRuntime {
     pub fn new(args: &Args) -> (Self, mpsc::Sender<ProgressEvent>) {
         let (tx, rx) = mpsc::channel::<ProgressEvent>(100);
         let logger = LoggerManager::init().expect("initializing loggers");
-        let settings = Self::load_settings_from_file().unwrap_or_else(RuntimeConfig::default);
-        
+        let settings = Self::load_settings()
+            .unwrap_or_else(|e| {
+                error!("Failed to load settings, using default: {}", e);
+                RuntimeConfig::default()
+            });
+
         let mut state = tui::AppState::new("(detecting...)".into(), "Auto".into());
         state.status = "Detecting fastest server...".into();
         state.settings = settings;
-        if args.duration != 10 { state.settings.duration_sec = args.duration; state.settings_dirty = true; }
-        if args.concurrency != 8 { state.settings.concurrency = args.concurrency; state.settings_dirty = true; }
+        if args.duration != 10 {
+            state.settings.duration_sec = args.duration;
+            state.settings_dirty = true;
+        }
+        if args.concurrency != 8 {
+            state.settings.concurrency = args.concurrency;
+            state.settings_dirty = true;
+        }
 
         (Self { state, source_runtime: SourceRuntime::new(tx.clone()), rx, _logger: logger }, tx)
     }
 
-    fn load_settings_from_file() -> Option<RuntimeConfig> {
-        std::fs::read_to_string("data/settings.json").ok().and_then(|s| serde_json::from_str(&s).ok())
+    fn load_settings() -> Result<RuntimeConfig> {
+        Ok(serde_json::from_str(&std::fs::read_to_string("data/settings.json")?)?)
     }
 
     pub fn save_settings(&self) {
@@ -64,12 +74,14 @@ impl AppRuntime {
             // 2. Render UI
             self.state.throbber_state.calc_next();
             if let Err(e) = terminal.draw(|f| tui::draw(f, &mut self.state)) {
-                error!("Draw error: {}", e); break 'app;
+                error!("Draw error: {}", e);
+                break 'app;
             }
 
             // 3. Handle input
             if !event::poll(Duration::from_millis(16)).unwrap_or(false) {
-                tokio::task::yield_now().await; continue;
+                tokio::task::yield_now().await;
+                continue;
             }
 
             match event::read() {
@@ -131,10 +143,16 @@ impl AppRuntime {
             route_settings_key(&mut self.state, key),
             SettingsRouteOutcome::ReloadRequested
         ) {
-            if let Some(settings) = Self::load_settings_from_file() {
-                self.state.settings = settings; self.state.settings_dirty = false;
-                tui::settings_sync_input(&mut self.state);
-                tui::push_timeline(&mut self.state.timeline, "Settings reloaded from disk".into());
+            match Self::load_settings() {
+                Ok(settings) => {
+                    self.state.settings = settings;
+                    self.state.settings_dirty = false;
+                    tui::settings_sync_input(&mut self.state);
+                    tui::push_timeline(&mut self.state.timeline, "Settings reloaded from disk".into());
+                }
+                Err(e) => {
+                   error!("Failed to load settings, using default: {}", e)
+                }
             }
         }
         false

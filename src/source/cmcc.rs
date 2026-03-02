@@ -5,11 +5,11 @@ use crate::speedtest::types::{ActiveTestHandle, ProgressEvent, RuntimeConfig};
 use crate::speedtest::{SpeedTester, SpeedtestEndpoints};
 use anyhow::Result;
 use std::sync::atomic::AtomicBool;
-use tokio::sync::mpsc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tracing::{info, warn};
 use std::sync::Mutex as StdMutex;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+use tracing::{info, warn};
 
 const DEFAULT_NODE_PORT: u16 = 18989;
 const DETECT_TIMEOUT_MS: u64 = 900;
@@ -87,7 +87,7 @@ impl CmccSource {
                 return Arc::clone(tester);
             }
         }
-        
+
         let tester = Arc::new(SpeedTester::new(
             selection.base_url.clone(),
             DEFAULT_NODE_PORT,
@@ -161,7 +161,7 @@ impl CmccSource {
         let mut best: Option<ProbeResult> = None;
         let mut received = 0usize;
         let mut last_reported = 0usize;
-        
+
         let _ = tx.send(ProgressEvent::Status(
             "Detecting fastest server...".into(),
         )).await;
@@ -174,7 +174,7 @@ impl CmccSource {
                     if best.as_ref().map_or(true, |b| probe.latency_ms < b.latency_ms) {
                         best = Some(probe);
                     }
-                    
+
                     // Only report if count changed significantly or we got a new best
                     if received != last_reported {
                         if let Some(best_probe) = &best {

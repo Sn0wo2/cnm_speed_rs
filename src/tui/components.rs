@@ -67,7 +67,7 @@ pub fn render_apple_button(f: &mut Frame, text: &str, color: Color, area: Rect) 
             text,
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ))
-        .alignment(Alignment::Center),
+            .alignment(Alignment::Center),
         layout[1],
     );
 }

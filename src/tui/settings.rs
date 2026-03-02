@@ -77,14 +77,14 @@ pub fn settings_adjust(state: &mut AppState, delta: i32) {
         SettingsField::SpeedRefresh => {
             state.settings.speed_refresh_ms = (state.settings.speed_refresh_ms as i32
                 + if delta > 0 { 20 } else { -20 })
-            .clamp(50, 1000) as u64;
+                .clamp(50, 1000) as u64;
             state.settings_dirty = true;
             settings_sync_input(state);
         }
         SettingsField::PingRefresh => {
             state.settings.ping_refresh_ms = (state.settings.ping_refresh_ms as i32
                 + if delta > 0 { 20 } else { -20 })
-            .clamp(20, 2000) as u64;
+                .clamp(20, 2000) as u64;
             state.settings_dirty = true;
             settings_sync_input(state);
         }

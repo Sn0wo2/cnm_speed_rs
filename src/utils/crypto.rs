@@ -31,8 +31,8 @@ impl CMCCCrypto {
             self.key_3des.as_slice().into(),
             self.iv_3des.as_slice().into(),
         )
-        .encrypt_padded_mut::<Pkcs7>(&mut buf, ip.len())
-        .unwrap();
+            .encrypt_padded_mut::<Pkcs7>(&mut buf, ip.len())
+            .unwrap();
         general_purpose::STANDARD.encode(ct)
     }
 
@@ -45,7 +45,7 @@ impl CMCCCrypto {
             self.key_3des.as_slice().into(),
             self.iv_3des.as_slice().into(),
         )
-        .decrypt_padded_mut::<Pkcs7>(&mut buf)
+            .decrypt_padded_mut::<Pkcs7>(&mut buf)
         {
             Ok(pt) => String::from_utf8_lossy(pt).into_owned(),
             Err(_) => String::new(),

@@ -63,7 +63,7 @@ pub fn apply_event(state: &mut AppState, ev: ProgressEvent) {
 
             if state.live_stats.dl_trend_start_ratio.is_none()
                 && trend_renderer
-                    .should_start_capture(state.live_stats.dl_ratio, state.live_stats.dl_speed)
+                .should_start_capture(state.live_stats.dl_ratio, state.live_stats.dl_speed)
             {
                 state.live_stats.dl_trend_start_ratio = Some(state.live_stats.dl_ratio);
             }
@@ -89,7 +89,7 @@ pub fn apply_event(state: &mut AppState, ev: ProgressEvent) {
 
             if state.live_stats.ul_trend_start_ratio.is_none()
                 && trend_renderer
-                    .should_start_capture(state.live_stats.ul_ratio, state.live_stats.ul_speed)
+                .should_start_capture(state.live_stats.ul_ratio, state.live_stats.ul_speed)
             {
                 state.live_stats.ul_trend_start_ratio = Some(state.live_stats.ul_ratio);
             }

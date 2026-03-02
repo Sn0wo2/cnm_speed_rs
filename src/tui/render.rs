@@ -380,7 +380,7 @@ fn render_performance(f: &mut Frame, s: &mut AppState, t: Theme, area: Rect) {
                     .map(Line::from)
                     .collect::<Vec<Line>>(),
             )
-            .style(Style::default().fg(t.accent)),
+                .style(Style::default().fg(t.accent)),
             trend_layout[1],
         );
     } else {
@@ -408,7 +408,7 @@ fn render_performance(f: &mut Frame, s: &mut AppState, t: Theme, area: Rect) {
                     .map(Line::from)
                     .collect::<Vec<Line>>(),
             )
-            .style(Style::default().fg(t.accent)),
+                .style(Style::default().fg(t.accent)),
             trend_layout[1],
         );
     }
@@ -677,7 +677,7 @@ fn render_nodes_table(f: &mut Frame, s: &mut AppState, t: Theme, area: Rect) {
                 Cell::from(ip_text.to_string()),
                 Cell::from(if n.status == 1 { "Online" } else { "Offline" }),
             ])
-            .style(style)
+                .style(style)
         })
         .collect();
 
@@ -690,10 +690,10 @@ fn render_nodes_table(f: &mut Frame, s: &mut AppState, t: Theme, area: Rect) {
             Constraint::Length(10),
         ],
     )
-    .header(
-        Row::new(vec!["", "Node Name", "IP Address", "Status"]).style(Style::default().fg(t.dim)),
-    )
-    .block(block);
+        .header(
+            Row::new(vec!["", "Node Name", "IP Address", "Status"]).style(Style::default().fg(t.dim)),
+        )
+        .block(block);
     f.render_widget(table, area);
 }
 
@@ -717,13 +717,13 @@ fn draw_settings_modal(f: &mut Frame, s: &AppState, t: Theme) {
                     Style::default().fg(t.dim),
                 )),
             ])
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(t.accent))
-                    .style(Style::default().bg(t.bg_card)),
-            ),
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(t.accent))
+                        .style(Style::default().bg(t.bg_card)),
+                ),
             area,
         );
         return;
